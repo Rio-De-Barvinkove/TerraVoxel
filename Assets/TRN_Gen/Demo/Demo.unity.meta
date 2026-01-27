@@ -1,0 +1,14 @@
+fileFormatVersion: 2
+guid: 3e7fe56eada4e4249b374b68216cf0d2
+DefaultImporter:
+  externalObjects: {}
+  userData: 
+  assetBundleName: 
+  assetBundleVariant: 
+AssetOrigin:
+  serializedVersion: 1
+  productId: 195811
+  packageName: XGen - Procedural Terrain Generator
+  packageVersion: 2.0
+  assetPath: Assets/TRN_Gen/Demo/Demo.unity
+  uploadId: 463865
