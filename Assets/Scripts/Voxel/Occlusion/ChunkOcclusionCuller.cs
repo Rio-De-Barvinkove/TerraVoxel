@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Streaming;
@@ -47,10 +48,13 @@ namespace TerraVoxel.Voxel.Occlusion
         readonly List<ChunkCoord> _restoreBuffer = new List<ChunkCoord>(256);
         static readonly Vector3[] BoundsCorners = new Vector3[8];
         static readonly float[] CornerDistSq = new float[8];
+        static readonly int[] CornerIndices = new int[8];
+        static readonly Vector3[] TempCorners = new Vector3[8];
         bool _wasEnabled;
         float _maxRayDistSq;
         static bool _warnedLayerMissing;
         static bool _warnedLayerEmpty;
+        static bool _warnedPhysicsError;
 
         void OnValidate()
         {
@@ -179,63 +183,72 @@ namespace TerraVoxel.Voxel.Occlusion
             return (LayerMask)(1 << layer);
         }
 
-        /// <summary>Tests 8 corners + center; partial visibility through gaps may be missed. Optional coarse CheckSphere skips raycasts when no occluder in bounds sphere; when occluder is present, only 4 nearest corners are raycast to reduce cost.</summary>
+        /// <summary>Tests 8 corners + center; partial visibility through gaps may be missed. Optional coarse CheckSphere skips raycasts when no occluder in bounds sphere; when occluder is present, only 4 nearest corners are raycast to reduce cost. On Physics exception returns true (assume visible) and logs once.</summary>
         bool AnyRayUnblocked(Vector3 camPos, Bounds bounds, LayerMask mask)
         {
-            bool occluderInSphere = false;
-            if (useCoarseSphereCheck)
+            try
             {
-                float r = bounds.extents.magnitude;
-                if (r > 0.0001f && !Physics.CheckSphere(bounds.center, r, mask, QueryTriggerInteraction.Ignore))
-                    return true;
-                occluderInSphere = true;
+                bool occluderInSphere = false;
+                if (useCoarseSphereCheck)
+                {
+                    float r = bounds.extents.magnitude;
+                    if (r > 0.0001f && !Physics.CheckSphere(bounds.center, r, mask, QueryTriggerInteraction.Ignore))
+                        return true;
+                    occluderInSphere = true;
+                }
+                FillBoundsCorners(bounds);
+                float padding = raycastPadding;
+                int rayCount = 8;
+                if (occluderInSphere)
+                {
+                    SortCornersByDistanceTo(camPos);
+                    rayCount = 4;
+                }
+                for (int i = 0; i < rayCount; i++)
+                {
+                    Vector3 target = BoundsCorners[i];
+                    Vector3 dir = target - camPos;
+                    float dist = dir.magnitude;
+                    if (dist <= padding) return true;
+                    dir /= dist;
+                    if (!Physics.Raycast(camPos, dir, dist - padding, mask, QueryTriggerInteraction.Ignore))
+                        return true;
+                }
+                if (rayCount == 8)
+                {
+                    Vector3 centerDir = bounds.center - camPos;
+                    float centerDist = centerDir.magnitude;
+                    if (centerDist <= padding) return true;
+                    centerDir /= centerDist;
+                    if (!Physics.Raycast(camPos, centerDir, centerDist - padding, mask, QueryTriggerInteraction.Ignore))
+                        return true;
+                }
+                return false;
             }
-            FillBoundsCorners(bounds);
-            float padding = raycastPadding;
-            int rayCount = 8;
-            if (occluderInSphere)
+            catch (Exception e)
             {
-                SortCornersByDistanceTo(camPos);
-                rayCount = 4;
+                if (!_warnedPhysicsError)
+                {
+                    _warnedPhysicsError = true;
+                    Debug.LogWarning($"[ChunkOcclusionCuller] Physics error in AnyRayUnblocked: {e.Message}. Treating chunk as visible.");
+                }
+                return true;
             }
-            for (int i = 0; i < rayCount; i++)
-            {
-                Vector3 target = BoundsCorners[i];
-                Vector3 dir = target - camPos;
-                float dist = dir.magnitude;
-                if (dist <= padding) return true;
-                dir /= dist;
-                if (!Physics.Raycast(camPos, dir, dist - padding, mask, QueryTriggerInteraction.Ignore))
-                    return true;
-            }
-            if (rayCount == 8)
-            {
-                Vector3 centerDir = bounds.center - camPos;
-                float centerDist = centerDir.magnitude;
-                if (centerDist <= padding) return true;
-                centerDir /= centerDist;
-                if (!Physics.Raycast(camPos, centerDir, centerDist - padding, mask, QueryTriggerInteraction.Ignore))
-                    return true;
-            }
-            return false;
         }
 
-        /// <summary>Sorts static BoundsCorners in place by distance to origin (nearest first). Used to raycast only 4 nearest corners when coarse sphere detected an occluder. Uses static CornerDistSq to avoid per-call allocation.</summary>
+        /// <summary>Sorts static BoundsCorners in place by distance to origin (nearest first). Uses Array.Sort with static buffers to avoid per-call allocation.</summary>
         static void SortCornersByDistanceTo(Vector3 origin)
         {
             for (int i = 0; i < 8; i++)
-                CornerDistSq[i] = (BoundsCorners[i] - origin).sqrMagnitude;
-            for (int i = 0; i < 7; i++)
             {
-                int best = i;
-                for (int j = i + 1; j < 8; j++)
-                    if (CornerDistSq[j] < CornerDistSq[best]) best = j;
-                if (best != i)
-                {
-                    float d = CornerDistSq[i]; CornerDistSq[i] = CornerDistSq[best]; CornerDistSq[best] = d;
-                    var v = BoundsCorners[i]; BoundsCorners[i] = BoundsCorners[best]; BoundsCorners[best] = v;
-                }
+                CornerDistSq[i] = (BoundsCorners[i] - origin).sqrMagnitude;
+                CornerIndices[i] = i;
             }
+            Array.Sort(CornerIndices, 0, 8, Comparer<int>.Create((a, b) => CornerDistSq[a].CompareTo(CornerDistSq[b])));
+            for (int i = 0; i < 8; i++)
+                TempCorners[i] = BoundsCorners[CornerIndices[i]];
+            for (int i = 0; i < 8; i++)
+                BoundsCorners[i] = TempCorners[i];
         }
 
         static void FillBoundsCorners(Bounds b)

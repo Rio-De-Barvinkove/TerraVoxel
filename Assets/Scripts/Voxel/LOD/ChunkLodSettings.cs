@@ -110,18 +110,22 @@ namespace TerraVoxel.Voxel.Lod
             int targetDetailRank = GetDetailRank(target);
             bool movingToCoarser = targetDetailRank > currentDetailRank;
 
-            if (movingToCoarser && dist <= current.MaxDistance + upHysteresis)
-                return current;
+            if (movingToCoarser)
+            {
+                if (current.MaxDistance == int.MaxValue) return current;
+                if (dist <= current.MaxDistance + upHysteresis) return current;
+            }
             if (!movingToCoarser && dist >= current.MinDistance - downHysteresis)
                 return current;
 
             return target;
         }
 
+        /// <summary>Default level when no Levels match. When DefaultLevelFarDistance is 0, far-range switch is disabled and DefaultMode is always used.</summary>
         ChunkLodLevel DefaultLevel(int dist = -1)
         {
             ChunkLodMode mode = DefaultMode;
-            if (DefaultLevelFarDistance > 0 && dist >= DefaultLevelFarDistance)
+            if (DefaultLevelFarDistance > 0 && dist >= 0 && dist >= DefaultLevelFarDistance)
                 mode = ChunkLodMode.None;
             int hyst = Mathf.Clamp(DefaultHysteresis, 0, ChunkLodLevel.MaxHysteresis);
             return new ChunkLodLevel

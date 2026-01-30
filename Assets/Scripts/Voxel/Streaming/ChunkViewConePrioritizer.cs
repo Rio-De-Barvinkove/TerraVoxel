@@ -19,13 +19,17 @@ namespace TerraVoxel.Voxel.Streaming
         [SerializeField] bool includeVerticalDistance = false;
         [SerializeField] float coneHalfAngleDeg = 70f;
         [Header("Visual Weights (not normalized; one may dominate)")]
+        [Tooltip("Tune weights relative to each other; not auto-normalized.")]
         [SerializeField] bool useVisualWeights = true;
         [SerializeField] float dotWeight = 1f;
         [SerializeField] float distanceWeight = 1f;
         [SerializeField] float surfaceBonus = 0.5f;
         [SerializeField] float heightBonus = 0.25f;
         [SerializeField] float undergroundPenalty = 0.25f;
+        [Tooltip("Optional: used for surface/height bonus. If null or invalid, that part of the score is skipped.")]
         [SerializeField] WorldGenConfig worldGen;
+
+        static bool _warnedWorldGenScore;
 
         /// <summary>Priority queue: higher score = dequeued first. Stored as (coord, score); heap ordered by score descending.</summary>
         readonly List<Entry> _heap = new List<Entry>(256);
@@ -43,7 +47,7 @@ namespace TerraVoxel.Voxel.Streaming
         public bool Enabled => enable;
         public int Count => _heap.Count;
 
-        /// <summary>Score for a chunk (distance, view cone, surface band). Called once per enqueue; weights not normalized.</summary>
+        /// <summary>Score for a chunk (distance, view cone, surface band). Called once per enqueue; weights not normalized. worldGen/BaseHeight guarded; on exception visual bonus is skipped and a warning is logged once.</summary>
         public float ComputeScore(ChunkCoord c, ChunkCoord center, Vector3 forward, bool includeVerticalDistance)
         {
             int dx = c.X - center.X;
@@ -82,14 +86,28 @@ namespace TerraVoxel.Voxel.Streaming
             float visualScoreNorm = 0f;
             if (worldGen != null)
             {
-                int surfaceY = Mathf.RoundToInt(worldGen.BaseHeight / VoxelConstants.ChunkSize);
-                int absDy = Mathf.Abs(c.Y - surfaceY);
-                if (absDy <= 1)
-                    visualScoreNorm += surfaceBonus; // does not check chunk visibility
-                else if (dy > 0)
-                    visualScoreNorm += heightBonus;
-                else if (dy < 0)
-                    visualScoreNorm -= undergroundPenalty;
+                try
+                {
+                    float baseHeight = worldGen.BaseHeight;
+                    if (float.IsNaN(baseHeight) || baseHeight < 0f)
+                        baseHeight = 0f;
+                    int surfaceY = Mathf.RoundToInt(baseHeight / VoxelConstants.ChunkSize);
+                    int absDy = Mathf.Abs(c.Y - surfaceY);
+                    if (absDy <= 1)
+                        visualScoreNorm += surfaceBonus; // does not check chunk visibility
+                    else if (dy > 0)
+                        visualScoreNorm += heightBonus;
+                    else if (dy < 0)
+                        visualScoreNorm -= undergroundPenalty;
+                }
+                catch (System.Exception e)
+                {
+                    if (!_warnedWorldGenScore)
+                    {
+                        _warnedWorldGenScore = true;
+                        Debug.LogWarning($"[ChunkViewConePrioritizer] worldGen/BaseHeight error in ComputeScore: {e.Message}. Skipping surface/height bonus.");
+                    }
+                }
             }
             visualScoreNorm = Mathf.Clamp01(visualScoreNorm + 0.5f) - 0.5f; // keep small range around 0
 

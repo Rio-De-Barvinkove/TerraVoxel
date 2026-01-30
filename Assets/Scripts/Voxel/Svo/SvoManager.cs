@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using Unity.Collections;
@@ -16,6 +17,8 @@ namespace TerraVoxel.Voxel.Svo
 
         readonly Dictionary<ulong, SvoMeshEntry> _cache = new Dictionary<ulong, SvoMeshEntry>();
         readonly Dictionary<ChunkCoord, ulong> _chunkHashes = new Dictionary<ChunkCoord, ulong>();
+        readonly LinkedList<ulong> _lruOrder = new LinkedList<ulong>();
+        readonly Dictionary<ulong, LinkedListNode<ulong>> _lruNodes = new Dictionary<ulong, LinkedListNode<ulong>>();
         readonly object _cacheLock = new object();
 
         struct SvoMeshEntry
@@ -26,6 +29,7 @@ namespace TerraVoxel.Voxel.Svo
             public int UseCount;
         }
 
+        /// <summary>Builds or returns cached SVO mesh. On Build/BuildMesh exception, logs error, disposes volume, returns false and does not cache.</summary>
         public bool TryGetOrBuildMesh(ChunkCoord coord, ChunkData data, int leafSize, byte maxMaterialIndex, byte fallbackMaterialIndex, out Mesh mesh)
         {
             mesh = null;
@@ -48,14 +52,16 @@ namespace TerraVoxel.Voxel.Svo
                     entry.UseCount++;
                     _cache[hash] = entry;
                     _chunkHashes[coord] = hash;
+                    MoveLruToEnd(hash);
                     mesh = entry.Mesh;
                     return true;
                 }
             }
 
-            var volume = SvoBuilder.Build(data, leafSize);
+            SvoVolume volume = null;
             try
             {
+                volume = SvoBuilder.Build(data, leafSize);
                 var builtMesh = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
                 SvoMeshBuilder.BuildMesh(volume, builtMesh, maxMaterialIndex, fallbackMaterialIndex);
 
@@ -69,14 +75,21 @@ namespace TerraVoxel.Voxel.Svo
                         UseCount = 1
                     };
                     _chunkHashes[coord] = hash;
+                    var node = _lruOrder.AddLast(hash);
+                    _lruNodes[hash] = node;
                     EvictIfNeededInner();
                 }
                 mesh = builtMesh;
                 return true;
             }
+            catch (Exception e)
+            {
+                Debug.LogError($"[SvoManager] Build/BuildMesh failed for chunk {coord}: {e.Message}\n{e.StackTrace}");
+                return false;
+            }
             finally
             {
-                volume.Dispose();
+                volume?.Dispose();
             }
         }
 
@@ -102,7 +115,14 @@ namespace TerraVoxel.Voxel.Svo
             }
         }
 
-        /// <summary>LRU-style eviction (UseCount, LastUsedFrame). May be suboptimal for highly dynamic scenes.</summary>
+        void MoveLruToEnd(ulong hash)
+        {
+            if (!_lruNodes.TryGetValue(hash, out var node)) return;
+            _lruOrder.Remove(node);
+            _lruOrder.AddLast(node);
+        }
+
+        /// <summary>LRU eviction: evicts oldest (front of _lruOrder) entries with RefCount 0. O(1) per eviction.</summary>
         void EvictIfNeeded()
         {
             lock (_cacheLock)
@@ -116,26 +136,16 @@ namespace TerraVoxel.Voxel.Svo
             if (maxCacheEntries <= 0 || _cache.Count <= maxCacheEntries) return;
             int budget = evictPerFrame > 0 ? evictPerFrame : int.MaxValue;
 
-            while (_cache.Count > maxCacheEntries && budget-- > 0)
+            for (var node = _lruOrder.First; node != null && _cache.Count > maxCacheEntries && budget > 0;)
             {
-                bool found = false;
-                ulong bestKey = 0;
-                float bestScore = float.MinValue;
-
-                foreach (var kvp in _cache)
+                var next = node.Next;
+                ulong hash = node.Value;
+                if (_cache.TryGetValue(hash, out var entry) && entry.RefCount == 0)
                 {
-                    if (kvp.Value.RefCount > 0) continue;
-                    float score = kvp.Value.UseCount * 1000f - kvp.Value.LastUsedFrame;
-                    if (!found || score < bestScore)
-                    {
-                        found = true;
-                        bestKey = kvp.Key;
-                        bestScore = score;
-                    }
+                    RemoveEntryInner(hash);
+                    budget--;
                 }
-
-                if (!found) break;
-                RemoveEntryInner(bestKey);
+                node = next;
             }
         }
 
@@ -149,6 +159,11 @@ namespace TerraVoxel.Voxel.Svo
 
         void RemoveEntryInner(ulong hash)
         {
+            if (_lruNodes.TryGetValue(hash, out var lruNode))
+            {
+                _lruOrder.Remove(lruNode);
+                _lruNodes.Remove(hash);
+            }
             if (_cache.TryGetValue(hash, out var entry))
             {
                 if (entry.Mesh != null)

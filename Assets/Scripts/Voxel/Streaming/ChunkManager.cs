@@ -16,8 +16,8 @@ namespace TerraVoxel.Voxel.Streaming
     /// <summary>
     /// Maintains active chunks around a tracked transform. Spawns limited count per frame.
     /// Monolithic: streaming, LOD, physics, caching, save, adaptive limits in one class (consider splitting into ChunkLoader/LodManager etc.).
-    /// Intended to run on main thread (Update); job handles are only completed on main thread.
-    /// _pendingSet + _pending duplicate coords for O(1) membership; data/mesh caches use eviction (LRU-style). NativeArray/Dispose is caller responsibility where applicable.
+    /// Intended to run on main thread (Update); job handles are only completed on main thread. All state is accessed from main thread only; no locking. If ever used from multiple threads, add synchronization.
+    /// _pendingSet + _pending duplicate coords for O(1) membership; data/mesh caches use eviction (LRU-style). _emptyMaterials uses Allocator.Persistent and must be disposed (OnDestroy).
     /// </summary>
     public class ChunkManager : MonoBehaviour
     {
@@ -138,6 +138,7 @@ namespace TerraVoxel.Voxel.Streaming
         readonly Dictionary<ChunkCoord, PendingCachedMesh> _pendingCachedMeshes = new Dictionary<ChunkCoord, PendingCachedMesh>();
         readonly Dictionary<ulong, CachedMeshEntry> _meshCache = new Dictionary<ulong, CachedMeshEntry>();
         readonly Dictionary<ChunkCoord, ulong> _chunkMeshHashes = new Dictionary<ChunkCoord, ulong>();
+        /// <summary>Empty materials buffer for jobs; Allocator.Persistent, must be disposed in OnDestroy.</summary>
         NativeArray<ushort> _emptyMaterials;
         readonly HashSet<ChunkCoord> _remeshAfterIntegration = new HashSet<ChunkCoord>();
         readonly List<RemoveCandidate> _removeCandidates = new List<RemoveCandidate>(256);
@@ -169,6 +170,7 @@ namespace TerraVoxel.Voxel.Streaming
         bool _hasDropForward;
         double _lastDropTime;
         bool _warnedLodStepMismatch;
+        static bool _warnedChunkPrefabNull;
 
         bool _safeSpawnInitialized;
         int _safeSpawnWorldX0;
@@ -448,6 +450,19 @@ namespace TerraVoxel.Voxel.Streaming
         void Update()
         {
             if (player == null || worldGen == null) return;
+            if (chunkPrefab == null)
+            {
+                EnsurePrefab();
+                if (chunkPrefab == null)
+                {
+                    if (!_warnedChunkPrefabNull)
+                    {
+                        _warnedChunkPrefabNull = true;
+                        Debug.LogWarning("[ChunkManager] chunkPrefab is null and could not be auto-created. Streaming disabled.");
+                    }
+                    return;
+                }
+            }
             if (!_safeSpawnInitialized) TryInitSafeSpawn();
             if (_waitingSafeSpawnMesh && safeSpawnTimeoutSeconds > 0 && (Time.realtimeSinceStartupAsDouble - _safeSpawnWaitStart) > safeSpawnTimeoutSeconds)
             {
@@ -646,21 +661,46 @@ namespace TerraVoxel.Voxel.Streaming
             return forward;
         }
 
-        /// <summary>Clears pending/preload/remove/integration queues and keeps only in-range remesh/mesh jobs. Does not check if chunks are still needed for render/physics; MaintainRadius repopulates pending.</summary>
+        /// <summary>Clears or filters pending/preload/remove/integration queues; keeps only in-range remesh/mesh jobs and in-range pending/preload coords. MaintainRadius may still repopulate pending.</summary>
         void DropWorkQueues(ChunkCoord center)
         {
+            int keepRadius = EffectiveUnloadRadius();
+            if (enablePreload)
+                keepRadius = Mathf.Max(keepRadius, EffectivePreloadRadius());
+
+            var pendingKeep = new List<ChunkCoord>();
+            foreach (var coord in _pendingSet)
+            {
+                if (IsWithinLoadRadius(coord, center, loadRadius))
+                    pendingKeep.Add(coord);
+            }
             _pending.Clear();
             _pendingSet.Clear();
+            for (int i = 0; i < pendingKeep.Count; i++)
+            {
+                var c = pendingKeep[i];
+                _pendingSet.Add(c);
+                _pending.Enqueue(c);
+            }
+
+            var preloadKeep = new List<ChunkCoord>();
+            foreach (var coord in _preloadSet)
+            {
+                if (IsWithinLoadRadius(coord, center, EffectivePreloadRadius()))
+                    preloadKeep.Add(coord);
+            }
             _preload.Clear();
             _preloadSet.Clear();
+            for (int i = 0; i < preloadKeep.Count; i++)
+            {
+                var c = preloadKeep[i];
+                _preloadSet.Add(c);
+                _preload.Enqueue(c);
+            }
             _removeQueue.Clear();
             _removeSet.Clear();
             _integrationQueue.Clear();
             _integrationSet.Clear();
-
-            int keepRadius = EffectiveUnloadRadius();
-            if (enablePreload)
-                keepRadius = Mathf.Max(keepRadius, EffectivePreloadRadius());
 
             var remeshKeep = new List<ChunkCoord>();
             foreach (var coord in _remeshSet)

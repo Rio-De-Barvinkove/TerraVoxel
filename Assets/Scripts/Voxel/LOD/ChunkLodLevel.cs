@@ -24,7 +24,7 @@ namespace TerraVoxel.Voxel.Lod
         /// <summary>Max allowed Hysteresis to avoid unexpected behaviour with large values.</summary>
         public const int MaxHysteresis = 256;
 
-        /// <summary>True if distances non-negative, MaxDistance &gt; MinDistance (non-empty range), LodStep &gt; 0, and 0 &lt;= Hysteresis &lt;= MaxHysteresis.</summary>
+        /// <summary>True if distances non-negative, MaxDistance &gt; MinDistance (non-empty range), LodStep &gt; 0, and 0 &lt;= Hysteresis &lt;= MaxHysteresis. MaxDistance may be int.MaxValue for unbounded far; callers must avoid overflow (e.g. MaxDistance + Hysteresis).</summary>
         public bool IsValid =>
             MinDistance >= 0 &&
             MaxDistance >= 0 &&
