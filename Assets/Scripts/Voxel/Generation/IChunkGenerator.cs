@@ -14,7 +14,7 @@ namespace TerraVoxel.Voxel.Generation
         /// <summary>
         /// Schedules chunk generation and returns the job handle with any temp data.
         /// </summary>
-        JobHandle Schedule(ChunkData data, ChunkCoord coord, WorldGenConfig config, NoiseStack noiseStack, out NativeArray<NoiseLayer> layers);
+        JobHandle Schedule(ChunkData data, ChunkCoord coord, WorldGenConfig config, NoiseStack noiseStack, out NativeArray<NoiseLayer> layers, int startIndex = 0, int count = -1);
     }
 }
 

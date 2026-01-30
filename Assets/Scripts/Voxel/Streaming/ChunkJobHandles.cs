@@ -46,12 +46,16 @@ namespace TerraVoxel.Voxel.Streaming
         public NativeArray<GreedyMesher.MaskCell> Mask;
         public NativeArray<ushort> Empty;
         public NeighborDataBuffers Neighbors;
+        public int Epoch;
+        public ulong MaterialsHash;
+        public int LodStep;
+        public bool OwnsEmpty;
 
         public void Dispose()
         {
             if (MaterialsCopy.IsCreated) MaterialsCopy.Dispose();
             if (Mask.IsCreated) Mask.Dispose();
-            if (Empty.IsCreated) Empty.Dispose();
+            if (OwnsEmpty && Empty.IsCreated) Empty.Dispose();
             Neighbors.Dispose();
             MeshData.Dispose();
         }

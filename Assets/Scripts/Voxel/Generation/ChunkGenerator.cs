@@ -15,7 +15,7 @@ namespace TerraVoxel.Voxel.Generation
         [BurstCompile]
         struct ChunkGeneratorJob : IJobParallelFor
         {
-            [WriteOnly] public NativeArray<ushort> Materials;
+            [WriteOnly] public NativeSlice<ushort> Materials;
             [ReadOnly] public NativeArray<NoiseLayer> Layers;
             public int Size;
             public int CoordX;
@@ -27,13 +27,15 @@ namespace TerraVoxel.Voxel.Generation
             public int ColumnChunks;
             public int Seed;
             public ushort MaterialIndex;
+            public int StartIndex;
 
             public void Execute(int index)
             {
+                int idx = StartIndex + index;
                 int size = Size;
-                int x = index % size;
-                int y = (index / size) % size;
-                int z = index / (size * size);
+                int x = idx % size;
+                int y = (idx / size) % size;
+                int z = idx / (size * size);
 
                 int worldX = CoordX * size + x;
                 int worldY = CoordY * size + y;
@@ -85,7 +87,7 @@ namespace TerraVoxel.Voxel.Generation
             }
         }
 
-        public JobHandle Schedule(ChunkData data, ChunkCoord coord, WorldGenConfig config, NoiseStack noiseStack, out NativeArray<NoiseLayer> layers)
+        public JobHandle Schedule(ChunkData data, ChunkCoord coord, WorldGenConfig config, NoiseStack noiseStack, out NativeArray<NoiseLayer> layers, int startIndex = 0, int count = -1)
         {
             layers = (noiseStack != null && noiseStack.Layers != null)
                 ? new NativeArray<NoiseLayer>(noiseStack.Layers, Allocator.Persistent)
@@ -95,9 +97,25 @@ namespace TerraVoxel.Voxel.Generation
                 ? 2
                 : Mathf.Clamp(config.DefaultMaterialIndex, 1, ushort.MaxValue);
 
+            int total = data.Materials.Length;
+            if (startIndex < 0) startIndex = 0;
+            if (startIndex >= total)
+            {
+                startIndex = 0;
+                count = total;
+            }
+            if (count <= 0)
+            {
+                startIndex = 0;
+                count = total;
+            }
+            if (startIndex + count > total)
+                count = total - startIndex;
+
+            var materialSlice = new NativeSlice<ushort>(data.Materials, startIndex, count);
             var job = new ChunkGeneratorJob
             {
-                Materials = data.Materials,
+                Materials = materialSlice,
                 Layers = layers,
                 Size = data.Size,
                 CoordX = coord.X,
@@ -108,10 +126,11 @@ namespace TerraVoxel.Voxel.Generation
                 HorizontalScale = config.HorizontalScale,
                 ColumnChunks = config.ColumnChunks,
                 Seed = config.Seed,
-                MaterialIndex = (ushort)matIndex
+                MaterialIndex = (ushort)matIndex,
+                StartIndex = startIndex
             };
 
-            return job.Schedule(data.Materials.Length, 64);
+            return job.Schedule(materialSlice.Length, 64);
         }
 
         public void Generate(ChunkData data, ChunkCoord coord, WorldGenConfig config, NoiseStack noiseStack)

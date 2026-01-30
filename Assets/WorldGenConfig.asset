@@ -12,10 +12,10 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 246561ee14a478e43976d7e920b06023, type: 3}
   m_Name: WorldGenConfig
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Generation.WorldGenConfig
-  Seed: 1
-  GeneratorVersion: 1
+  Seed: 3
+  GeneratorVersion: 5
   ChunkSize: 32
-  ColumnChunks: 8
+  ColumnChunks: 4
   BaseHeight: 64
   HeightScale: 32
   HorizontalScale: 0.01

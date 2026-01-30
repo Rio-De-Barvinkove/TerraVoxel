@@ -1,6 +1,6 @@
 # ROADMAP 
 
-**Оновлено:** 8 грудня 2025
+**Оновлено:** 23 січня 2026
 
 ---
 
@@ -45,7 +45,6 @@
 - [X] Палетний Texture2DArray генератор (256 кольорів) + матеріали на шейдері.
 - [X] FILEMAP.md з описом структури/потоків.
 - [X] Черга генерації чанків (pending tasks + ліміт нових чанків за кадр).
-- [X] Asynchronous chunk queue (1–2 завдання/кадр).
 - [X] Safe spawn zone з валідацією колізій.
 - [X] WorldLogger.performance: логування часу генерації/видалення.
 - [X] Налаштування шарів (terrain, objects, player, UI).
@@ -62,10 +61,57 @@
 - [X] Режим аналізу: fly mode + регульована швидкість.
 - [X] Тумблер освітлення (analysis mode, вимкнення тіней).
 - [X] Chunk class: 32x32x32 voxels (float density, uint8_t material); column 8 chunks (VS height 256).
-- [X] Threading: Unity Jobs для gen/mesh + ліміти ops/frame.
-- [X] Triplanar/Texture array.
-- [X] Streaming/Preload: limit time/frame; preload async.
 - [X] **Physics Optimization** (окрема фізика для активних чанків)
+- [X] View‑cone пріоритезація з візуальною вагою (surface/height).
+- [X] View‑cone пріоритетна черга: O(log n) dequeue (heap), EnqueueWithPriority при додаванні, ComputeScore нормалізований (distance/view/visual), динамічний surface band з WorldGenConfig, без fallback/витоку _buffer.
+- [X] Streaming work‑drop: epoch + ігнор стейл‑job результатів.
+- [X] Reverse‑LOD у радіусі (low→high апгрейд).
+- [X] Generation slicing (startIndex/count) + HUD черги/інтеграція.
+- [X] O(1) membership для pending/preload (HashSet + черга порядку).
+- [X] Removal time‑budget + зниження GC у MaintainRadius (без HashSet keep/needed).
+- [X] Reverse‑LOD таймер по часу (realtime), не по frameCount.
+- [X] Occlusion culling (frustum + optional raycast, окремий файл).
+- [X] SVO core (volume builder + mesh builder + cache, read‑mostly для дальніх LOD, окремі файли).
+- [X] **ChunkManager hardening:** integration lock (race‑safe pending/integration); recursion depth guards (RebuildNeighbors, RequestRemesh); safe spawn timeout з fallback на unsnapped position.
+- [X] **Mesh cache:** hash включає LodStep, neighbor hashes, density; size‑based eviction (vertex count) для великих meshes; memory pressure eviction.
+- [X] **Data cache:** TryLoadFromCache інвалідує при mod (GetDeltaCount > 0); memory pressure eviction (GC/cacheCap).
+- [X] **Adaptive limits:** memory pressure + graphics memory (SystemInfo.graphicsMemorySize) throttle.
+- [X] **Pending queue:** drop oldest при cap (DropOnePendingOldest; viewCone TryRemoveLowestPriority); work dropping + view cone (angle check у ProcessPending).
+- [X] **RequestRemesh:** Y bounds (ColumnChunks) для сусідів; TryGetChunk повертає false при chunk=null/gen.
+- [X] **ApplyChunkLayer** рекурсивно (SetLayerRecursively на children).
+- [X] **LOD:** ChunkLodLevel IsValid, Mode Billboard/None; ChunkLodSettings OnValidate (overlap/duplicate), GetDetailRank, TryGetLevelForDistance fallback за MaxDistance, hysteresis.
+- [X] **Far‑range LOD stub:** окрема черга _farRangeRenderQueue для render‑only поза unloadRadius (ProcessFarRangeLod cap, без spawn).
+- [X] **StreamingTimeBudget:** примітка про Jobs/Burst для оптимізації frame timing.
+
+---
+
+## Як увімкнути LOD, Occlusion та SVO
+
+Усі три системи керуються з **ChunkManager** у сцені.
+
+### 1. Occlusion Culling (приховування за камерою)
+- На тому ж GameObject, що й **ChunkManager**, додай компонент **ChunkOcclusionCuller** (або він підтягнеться автоматично через `GetComponent`).
+- У ChunkManager у полі **Occlusion → Chunk Occlusion Culler** має бути посилання на цей компонент (якщо порожньо — збереться після Play).
+- У **ChunkOcclusionCuller**:  
+  - **Enable Occlusion** — увімкнено за замовчуванням.  
+  - **Frustum Culling** — обрізання по frustum камери (за замовчуванням увімкнено).  
+  - **Raycast Occlusion** — опційно: приховувати чанки за перешкодами (raycast), за замовчуванням вимкнено (важче для CPU).
+
+### 2. Повна LOD-система (3–4 рівні, upgrade/downgrade, SVO для дальніх)
+- **ChunkManager → Full LOD System:**
+  - Увімкни **Enable Full Lod** = `true`.
+  - **Chunk Lod Settings** — створи asset: у Project **ПКМ → Create → TerraVoxel → Chunk LOD Settings**, задай ім’я (наприклад `ChunkLodSettings`).
+- У створеному **ChunkLodSettings** заповни **Levels** (відстані в чанках, LodStep, Mode):
+  - Приклад: близько — `MinDistance=0`, `MaxDistance=2`, `LodStep=1`, `Mode=Mesh`; далі — `MinDistance=3`, `MaxDistance=6`, `LodStep=2` або `4`, `Mode=Mesh` або `Svo`; ще далі — більший `LodStep` і `Mode=Svo` для SVO-мешу. Режими: **Mesh**, **Svo**, **Billboard**, **None** (ChunkLodLevel.IsValid перевіряє MinDistance/MaxDistance/Hysteresis).
+  - **Hysteresis** на рівні або **Default Hysteresis** у налаштуванні — запобігає мерехтінню на границях відстаней. OnValidate попереджає про перекриття/дублікати рівнів; для відстаней поза всіма MaxDistance використовується найгрубіший рівень.
+- Поле **Lod Settings** у ChunkManager прив’яжи до цього asset.
+
+### 3. SVO (окtree-меші для дальніх LOD)
+- На тому ж GameObject, що й ChunkManager, додай компонент **SvoManager** (або він підтягнеться автоматично).
+- У ChunkManager у полі **SVO → Svo Manager** має бути посилання (якщо порожньо — заповниться після Play).
+- У **SvoManager**: **Enable Svo** за замовчуванням `true`; **Max Cache Entries** / **Evict Per Frame** — підлаштуй під пам’ять і FPS.
+
+Підсумок: **Enable Full Lod** + посилання на **Chunk Lod Settings** + компоненти **ChunkOcclusionCuller** і **SvoManager** на тому ж об’єкті — і LOD, occlusion та SVO працюють разом.
 
 # ПЛАНИ
 P0 (високий пріоритет)
@@ -79,429 +125,16 @@ P1 (середній пріоритет)
 - [ ] Інтегрувати day_and_night_cycle — складність: середня.
 - [ ] Lighting optimization (лише активні чанки у світлі; опційно lightmap/probes) — складність: висока.
 - [ ] Random ticks: growth/update per biome — складність: середня.
-- [ ] LOD: 3–4 levels — складність: висока.
 - [ ] X-ray: cave highlight shader — складність: низька/середня.
 - [ ] Lighting toggle: dynamic/baked — складність: низька.
 - [ ] Creative mode: dynamic scale area — складність: середня.
 - [ ] Console: teleport/regen/profiler — складність: середня.
 P2 (нижчий пріоритет)
-- [ ] Octree/SVO (LOD/RT) — складність: дуже висока.
 - [ ] Octree compression: subdivide для LOD/SVO — складність: висока.
 - [ ] Indexed Buffers/GPU Opt: Vulkan buffers + occlusion — складність: дуже висока.
 - [ ] Spatial Partitioning: Quadtree 2D + Octree 3D — складність: висока.
 - [ ] Pixel snapping для спрайтів — складність: низька.
 
-# Для оптимізації
-1. Жорстке розділення "генерація ≠ стримінг ≠ інтеграція"
-Типова помилка:
-генерація → мешинг → завантаження в GPU відбуваються в одному кадрі або одному пулі.
-Що має бути:
-Генерація: CPU воркери, без доступу до світу
-Мешинг: окрема черга, окремі воркери
-GPU upload: лімітована кількість на кадр
-Правило:
-не більше X чанків інтегруються за кадр, незалежно від того, скільки готові.
-FPS падає не від генерації, а від інтеграції.
-
-**Детальний план реалізації:**
-Ціль: Розділити pipeline на 3 фази з окремими чергами та лімітом на інтеграцію, щоб уникнути спайків від GPU upload.
-- **Аналіз поточного стану (ChunkManager.cs):** Зараз ProcessMeshJobs() → mesh complete → chunk.ApplyMesh(addColliders) одразу (синхронно). Проблема: ApplyMesh блокує main thread (Unity Mesh.SetVertices, колайдер update).
-- **Створити нову чергу для інтеграції:** Додати в ChunkManager.cs readonly Queue<ChunkCoord> _integrationQueue, readonly HashSet<ChunkCoord> _integrationSet, [SerializeField] int maxIntegrationsPerFrame = 1.
-- **Змінити ProcessMeshJobs():** Після завершення mesh job (не перед) — додавати coord в _integrationQueue та _integrationSet, щоб відокремити мешинг від інтеграції.
-- **Додати новий метод ProcessIntegrationQueue():** У Update(), після ProcessMeshJobs(). Обробляти до maxIntegrationsPerFrame чанків/кадр: dequeue coord, якщо active — apply mesh, dispose data, rebuild neighbors. Інтегрувати StreamingTimeBudget: перевіряти після кожної інтеграції, якщо exceeded — зупинитися.
-- **Обробка preloaded чанків:** Якщо coord в _preloaded — setRendererEnabled(false) вже є, але додати перевірку на _preloaded в інтеграції для умовного колайдера.
-- **Тестування:** Запустити з великим світом, моніторити FPS в HUD, CPU/GPU usage, latency (час від spawn до render). Якщо спайки — збільшити ліміт або додати часовий бюджет.
-- **Потенційні зміни в інших файлах:** Chunk.cs — залишити. GreedyMesher.cs / MeshBuilder.cs — без змін. VoxelDebugHUD.cs — додати трекінг.
-**Переваги:** Стабільний FPS, бо інтеграція лімітована. Недоліки: Трохи більша латентність (чанк мешиться, але не одразу рендериться). Ліміт 1–2/кадр достатньо.
-
-2. Frame budget для стримінгу
-Якщо ти "приймаєш усе, що готово" — це помилка.
-Потрібен бюджет:
-1–2 чанки на кадр для upload
-решта чекає
-Так роблять VS і сучасні рушії.
-Інакше: спайки 40–70 FPS неминучі.
-
-**Детальний план реалізації:**
-Ціль: Впровадити строгий frame budget для всіх фаз стрімінгу, щоб уникнути спайків від перевантаження кадру.
-- **Аналіз поточного стану (ChunkManager.cs):** Є maxSpawnsPerFrame=1, maxRemeshPerFrame=2, StreamingTimeBudget (ms/кадр). Але інтеграція (ApplyMesh) не має ліміту, що може спричиняти спайки.
-- **Покращити існуючий бюджет часу:** StreamingTimeBudget вже існує — інтегрувати його в усі методи (ProcessPending, ProcessMeshJobs, ProcessIntegrationQueue). Якщо exceeded — зупинитися одразу.
-- **Додати ліміт для інтеграції:** Якщо не реалізований пункт 1, додати maxIntegrationsPerFrame=1-2, як у плані для пункту 1.
-- **Розширити бюджет на всі операції:** Трекінг часу в Update() повинен зупиняти всі Process* методи одразу при exceeded, не лише інтеграцію — відкладати решту на наступний кадр.
-- **Тестування:** Запустити з високим loadRadius, моніторити HUD, CPU/GPU usage, latency. Якщо спайки — зменшити ліміти або скоротити ms/кадр.
-- **Потенційні зміни в інших файлах:** VoxelDebugHUD.cs — додати профайлінг фаз у summary. ChunkManager.cs — додати профайлінг для кожної черги.
-**Переваги:** Стабільний FPS без спайків. Недоліки: Трохи повільніше завантаження чанків при русі. Рекомендація: Почати з 1-2 чанки/кадр для всіх фаз.
-
-3. Temporal slicing усередині генерації
-Навіть якщо генерація в потоках, вона:
-б’є кеш
-конкурує за пам’ять
-з’їдає bandwidth
-Рішення:
-генерація не "один чанк = одна задача"
-а "чанк = N маленьких фаз"
-Приклад фаз:
-heightfield
-geology
-materials
-post-process
-Фази можуть виконуватись у різні кадри.
-
-**Детальний план реалізації:**
-Ціль: Розбити генерацію чанка на N фаз, виконуваних у різні кадри, щоб зменшити навантаження на кеш/пам'ять/bandwidth.
-- **Аналіз поточного стану (ChunkGenerator.cs):** Одна Burst job для всього (heightmap + матеріали). Не пофазово — весь чанк генерується одразу.
-- **Створити enum для фаз:** У ChunkGenerator.cs додати enum GenerationPhase { Heightfield, Geology, Materials, PostProcess }.
-- **Додати чергу фаз у ChunkManager.cs:** пріоритизовану чергу (як ViewCone) _phaseQueue = new PriorityQueue<GenerationTask>(); struct GenerationTask { ChunkCoord coord; GenerationPhase phase; }.
-- **Змінити IChunkGenerator та ChunkGenerator:** Замість однієї Schedule() — додати SchedulePhase(phase). Кожна фаза — окрема Burst job (наприклад, HeightfieldJob, MaterialsJob).
-- **Модифікувати ProcessGenJobs():** Після завершення фази — зберігати проміжні дані в ChunkData (наприклад, NativeArray<float> heightmap), додавати наступну фазу в чергу, якщо не остання. Після останньої — переходити до мешингу.
-- **Додати ліміт фаз/кадр:** [SerializeField] int maxPhasesPerFrame = 2; // почати з 2 для Burst, щоб уникнути перевантаження.
-- **Тестування:** Запустити генерацію великих чанків, моніторити CPU usage, latency в HUD/Profiler. Якщо спайки — зменшити maxPhasesPerFrame.
-- **Потенційні зміни в інших файлах:** WorldGenConfig.cs — додати параметри для фаз (наприклад, enable phases). VoxelDebugHUD.cs — додати трекінг часу на фази.
-**Переваги:** Менше навантаження на кадр, стабільніший CPU. Недоліки: Більша латентність генерації, overhead від кількох Burst jobs (schedule cost > вигода для ChunkSize=32). Оцінити в профайлері, бо для малого чанка один job ефективніший. Почати з 2 фаз/кадр.
-
-4. Пріоритети не за відстанню, а за візуальною вагою
-Типова схема: ближче = важливіше. Це примітив.
-Краще:
-у полі зору > поза екраном
-силуети гір > підземні
-поверхня > глибина
-VS активно так робить.
-
-**Детальний план реалізації:**
-Ціль: Замінити пріоритет за відстанню на візуальну вагу (полі зору, силуети, поверхня), щоб гравець бачив важливі чанки першими.
-- **Аналіз поточного стану (ChunkViewConePrioritizer.cs):** Є пріоритет за напрямком камери, але не враховує Y-висоту (гори), видимість чи поверхню/глибину.
-- **Додати вагу візуальної важливості:** У ViewConePrioritizer створити функцію GetVisualWeight(coord, center, player): вага = (в полі зору? 3 : 1) * (Y > середньої висоти? 2 : 1) * (поверхневий шар? 1.5 : 0.5). Додати перевірку на поверхню через ChunkData (якщо Y > BaseHeight з WorldGenConfig).
-- **Змінити TryDequeue:** Замість простого пріоритету за dot — сортувати чергу за total weight = distanceWeight + visualWeight. Використати PriorityQueue з custom comparer замість buffer.
-- **Додати параметри:** [SerializeField] float viewConeBonus = 3f; [SerializeField] float heightBonus = 2f; [SerializeField] float surfaceBonus = 1.5f; [SerializeField] float undergroundPenalty = 0.5f.
-- **Інтегрувати з ChunkManager:** У MaintainRadius — при додаванні до pending враховувати вагу для черги.
-- **Тестування:** Рухатися по світу з горами/долинами, перевірити, чи гори/поверхня генеруються першими. Моніторити в HUD.
-- **Потенційні зміни в інших файлах:** ChunkManager.cs — передати viewCone більше даних (Y-висоти). VoxelDebugHUD.cs — додати візуалізацію пріоритетів.
-**Переваги:** Кращий UX — гравець бачить важливе одразу. Недоліки: Складніше обчислення (але мінімальне). Почати з простих ваг.
-
-5. Mesh reuse / instancing для "типових" чанків
-У природних світах:
-80% чанків — варіації одного типу
-Можна:
-хешувати block-pattern → mesh
-кешувати меші
-перевикористовувати vertex buffers
-Це зменшує:
-час мешингу
-GPU upload
-Minecraft цього майже не робить. VS — робить.
-
-**Детальний план реалізації:**
-Ціль: Впровадити кешування мешів на основі хешу паттерну чанка, щоб reuse готові меші для схожих чанків (наприклад, рівнини з однаковими матеріалами), значно зменшити час мешингу та GPU upload для повторюваних сценаріїв.
-
-- **1. Аналіз поточного стану (GreedyMesher.cs, MeshBuilder.cs):** Зараз кожен чанк обробляється окремо: GreedyMesher.Execute() → MeshBuilder.BuildMesh() → створюється новий Mesh для кожного чанка. Немає жодного кешування — навіть ідентичні чанки (наприклад, плоскі рівнини з dirt) мешуються з нуля. Це марно витрачає CPU на мешинг та GPU на upload, особливо в природних світах де 80% чанків — варіації базових паттернів.
-
-- **2. Створити структуру для кешування:**
-   - У ChunkManager.cs додати:
-     - `readonly Dictionary<uint, CachedMesh> _meshCache = new Dictionary<uint, CachedMesh>();`
-     - Struct `CachedMesh { public WeakReference<Mesh> mesh; public int refCount; public DateTime lastUsed; }` для LRU з weak references.
-     - `[SerializeField] int maxCacheSize = 500;` // почати з малого, збільшити якщо добре працює.
-   - Додати метод `uint ComputeChunkHash(NativeArray<byte> materials, NativeArray<byte>? density)`: використовувати CRC32 з Crc32.cs або Burst-хеш, враховуючи density якщо опційний.
-
-- **3. Інтегрувати кеш у ScheduleMesh:**
-   - У ChunkManager.cs, метод `ScheduleMeshForChunk(ChunkCoord coord, Chunk chunk)`:
-     - Спочатку викликати `uint hash = ComputeChunkHash(chunk.Data.Materials);`
-     - Якщо `_meshCache.TryGetValue(hash, out CachedMesh cached)`:
-       - `cached.lastUsed = DateTime.Now; cached.refCount++;`
-       - `chunk.ApplyMesh(cached.mesh, addColliders);` // reuse mesh напряму, без мешингу.
-       - Пропустити створення job для мешингу.
-     - Інакше: створити Burst job для мешингу, як зараз, але після завершення додати результат в cache: `_meshCache[hash] = new CachedMesh { mesh = resultMesh, refCount = 1, lastUsed = DateTime.Now };`
-
-- **4. Управління розміром cache:**
-   - Додати метод `EvictOldMeshes()`: викликається після додавання нового, якщо `count > maxCacheSize`. Знайти найстаріші за `lastUsed`, видалити з найменшим `refCount`.
-   - При видаленні чанка: зменшити `refCount` для його hash, якщо 0 — видалити з cache повністю.
-
-- **5. Розглянути instancing для однакових мешів:**
-   - Використати Graphics.DrawMeshInstanced() замість renderer, але тільки для статичних чанків (ігнорувати модифікації з ChunkModManager).
-   - Але почати без цього — спочатку просте reuse mesh достатньо.
-
-- **6. Інвалідація кешу при модифікаціях:**
-   - При змінах через ChunkModManager — інвалідація кешу для відповідного hash, щоб уникнути артефактів.
-
-- **7. Оптимізація хешу:**
-   - Якщо сума недостатньо (collision), додати більш складний хеш, але для початку простий достатньо.
-   - Хешувати тільки materials, бо geometry визначається ними в цьому проекті.
-
-- **7. Тестування:**
-   - Створити тестовий сценарій з великою плоскою рівниною (loadRadius=20), рухатися повільно.
-   - У VoxelDebugHUD додати метрики: "Mesh Cache Hits: X / Misses: Y, Size: Z".
-   - Моніторити час на мешинг у HUD summary — повинен зменшитися значно для повторюваних чанків.
-   - Якщо cache не працює (collision) — перевірити хеш через логування.
-
-- **8. Потенційні зміни в інших файлах:**
-   - Chunk.cs: ApplyMesh вже приймає Mesh — залишити, але додати опцію для clone (якщо потрібно унікальний).
-   - GreedyMesher.cs: Без змін, бо job створюється тільки при miss.
-   - MeshBuilder.cs: Додати метод `Mesh CopyFromCache(CachedMesh cached)` — якщо треба clone mesh замість reuse напряму.
-   - VoxelDebugHUD.cs: Додати cache stats у DrawSummary().
-   - WorldGenConfig.cs: Можливо додати опцію `enableMeshCaching` для відключення.
-
-**Переваги:** Дуже швидкий мешинг для типових чанків (рівнини, гори з однаковими матеріалами), зменшення CPU/GPU навантаження, кращий FPS. Недоліки: Додаткова пам'ять на cache (але Mesh об'єкти невеликі), ризик collision якщо хеш поганий. Почати з малого cache (200-500), збільшувати поступово.
-
-6. Частковий мешинг при генерації
-Не весь чанк потрібен одразу.
-Порядок:
-верх + силует
-боки
-деталі
-Поки гравець рухається — силует вже є, FPS стабільний.
-
-**Детальний план реалізації:**
-Ціль: Впровадити пофазний мешинг чанка: спочатку силует (верхній шар для горизонту), потім боки, потім деталі, щоб гравець бачив важливі візуальні елементи одразу при русі, забезпечуючи стабільний FPS навіть при швидкому завантаженні.
-
-- **1. Аналіз поточного стану (GreedyMesher.cs, MeshBuilder.cs):** Зараз GreedyMesher.Execute() меш весь чанк повністю за один прохід — усі блоки (поверхня, підземні, деталі) обробляються одразу. Це призводить до того, що чанк не рендериться, поки не буде повністю оброблений, що може спричиняти "порожні" зони при швидкому русі.
-
-- **2. Визначити фази мешингу:**
-   - У GreedyMesher.cs додати enum `MeshPhase { Silhouette, Sides, Details }`.
-     - `Silhouette`: меш тільки maxY шар + видимі faces, для горизонту/силуету гір.
-     - `Sides`: бічні стінки чанка (X=0, X=max, Z=0, Z=max), щоб показати контури.
-     - `Details`: решта внутрішніх блоків, деталі підземних структур.
-
-- **3. Змінити GreedyMesher.Execute():**
-   - Додати параметр `MeshPhase phase` до Execute().
-   - У циклі по blocks додати умову: `if (phase == MeshPhase.Silhouette && y != maxY) continue;` або подібно для інших фаз.
-   - Для `Details` — меш все, як зараз.
-
-- **4. Додати чергу для mesh фаз у ChunkManager.cs:**
-   - Додати `readonly Queue<MeshTask> _meshPhaseQueue = new Queue<MeshTask>();`
-   - Struct `MeshTask { ChunkCoord coord; MeshPhase phase; }`
-   - Після генерації чанка (ProcessGenJobs) додавати `_meshPhaseQueue.Enqueue(new MeshTask { coord = coord, phase = MeshPhase.Silhouette });`
-
-- **5. Змінити ProcessMeshJobs():**
-   - Замість одразу ScheduleMesh для всього, тепер ScheduleMeshPhase(task.coord, task.phase).
-   - Після завершення job для фази:
-     - Якщо phase == Silhouette — додати Sides у чергу.
-     - Якщо Sides — додати Details.
-     - Якщо Details — завершити мешинг (apply final mesh).
-
-- **6. Ліміт фаз/кадр:**
-   - Додати `[SerializeField] int maxMeshPhasesPerFrame = 2;` // 1-3 фази/кадр, щоб не перевантажувати. Можливо об'єднати з maxRemeshPerFrame для єдиного ліміту.
-   - У Update() додати цикл для ProcessMeshPhaseQueue(), обмежений цим лімітом.
-
-- **7. Merge часткових мешів:**
-   - У MeshBuilder.cs додати метод `MergeMeshes(List<Mesh> partials)` — комбінувати силует + sides + details в один фінальний mesh, використовуючи NativeLists.
-   - Після Details фази — викликати merge і apply фінальний.
-
-- **8. Тестування:**
-   - Рухатися швидко по світу з різноманітним тереном (гори, долини).
-   - Перевірити, чи з'являються силует гір одразу після генерації чанка.
-   - Моніторити FPS у HUD — повинен бути стабільним навіть при швидкому русі.
-   - Якщо силует не видно — налаштувати, що саме мешиться в Silhouette (наприклад, тільки opaque blocks на верхньому шарі).
-
-- **9. Потенційні зміни в інших файлах:**
-   - Chunk.cs: ApplyMesh може потребувати версію для partial mesh (тільки силует спочатку).
-   - MeshBuilder.cs: Додати MergeMeshes() та підтримку partial build.
-   - VoxelDebugHUD.cs: Додати трекінг фаз у summary: "Mesh Phases: Sil X, Sides Y, Details Z".
-   - WorldGenConfig.cs: Можливо додати опції для фаз (наприклад, disable details для low-end).
-
-**Переваги:** Швидший візуальний фідбек при русі, стабільний FPS, бо гравець бачить силует одразу. Недоліки: Складніший код мешингу, більша латентність для повного рендерингу. Почати з простих фаз (Silhouette + Details), додавати Sides пізніше.
-
-7. Відкладена деталізація (reverse LOD)
-Зазвичай LOD = спрощення.
-VS робить навпаки:
-спочатку грубо
-потім уточнює, якщо чанк "вижив" у радіусі
-Це різко знижує марну роботу.
-
-**Детальний план реалізації:**
-Ціль: Впровадити reverse LOD: спочатку чанки генеруються/мешуються в низькій якості (low-res), а потім автоматично підвищуються до high-res тільки якщо залишаються в радіусі завантаження достатньо довго, щоб уникнути марної роботи на чанки, які швидко виходять з поля зору.
-
-- **1. Аналіз поточного стану (GreedyMesher.cs, ChunkManager.cs):** Немає жодного LOD — усі чанки мешуються з повною деталізацією одразу після генерації. Це марно для чанків, які гравець бачить лише мить (наприклад, при швидкому русі через великі відстані).
-
-- **2. Додати рівні LOD:**
-   - У ChunkManager.cs додати enum `LodLevel { Low, High }`.
-   - У Chunk або додати поле `LodLevel currentLod = LodLevel.Low;`
-   - У WorldGenConfig.cs додати `[SerializeField] bool enableReverseLod = true; [SerializeField] int lodUpgradeFrames = 5;` // після скількох кадрів upgrade.
-
-- **3. Спавнити чанки з Low LOD:**
-   - У MaintainRadius() при додаванні до pending: встановити lod = Low.
-   - У ScheduleMeshForChunk(): якщо lod == Low — передати параметр resolution=0.5 або skip деякі деталі (наприклад, меш тільки кожний другий блок).
-   - Інтегрувати з існуючим greedy: додати level param в GreedyMesher для агрегації (наприклад, level=Low — меш кожний другий voxel).
-
-- **4. Відстежувати час життя чанка:**
-   - У Chunk або додати `int framesInRadius = 0;`
-   - У Update() для кожного active chunk: `framesInRadius++;`
-   - Якщо `framesInRadius >= lodUpgradeFrames && currentLod == Low` — ініціювати upgrade.
-
-- **5. Процес upgrade:**
-   - Додати чергу для upgrade: `readonly Queue<ChunkCoord> _lodUpgradeQueue = new Queue<ChunkCoord>();`
-   - При досягненні threshold: `_lodUpgradeQueue.Enqueue(coord);`
-   - У Update() додати ProcessLodUpgrades(): dequeue coord, після "виживання" в радіусі — ребілд high-res, replace mesh.
-
-- **6. Ліміт upgrades/кадр:**
-   - Додати `[SerializeField] int maxLodUpgradesPerFrame = 1;` // щоб не перевантажувати.
-   - Обмежити ProcessLodUpgrades() цим лімітом.
-
-- **7. Тестування:**
-   - Рухатися швидко через великий світ (loadRadius=30+), моніторити кількість чанків.
-   - Перевірити, чи low-res чанки (менше трикутників) з'являються спочатку, потім підвищуються до high-res.
-   - У VoxelDebugHUD додати "LOD Upgrades: X this frame, Low: Y, High: Z".
-   - Якщо багато марної роботи — збільшити lodUpgradeFrames.
-
-- **8. Потенційні зміни в інших файлах:**
-   - Chunk.cs: Додати поля currentLod, framesInRadius.
-   - GreedyMesher.cs: Змінити Execute() для підтримки resolution параметру (наприклад, step = (int)(1f / resolution)).
-   - MeshBuilder.cs: Підтримка різної кількості трикутників.
-   - VoxelDebugHUD.cs: Візуалізація LOD рівнів (наприклад, колір для low-res).
-   - PlayerTracker.cs: Можливо використовувати для перевірки, чи чанк ще в полі зору перед upgrade.
-
-**Переваги:** Значно менше марної роботи на чанки, які швидко виходять з радіусу, швидше завантаження великих світів. Недоліки: Потрібно пере-мешити при upgrade, складніше управління. Почати з простого: low-res = skip internal faces, high-res = все.
-
-8. Контроль алокацій
-Під час генерації:
-жодних new/delete
-жодних resize вектора в гарячих циклах
-slab / arena allocator
-40–70 FPS дуже часто = алокаційні спайки, а не "важка логіка".
-
-**Детальний план реалізації:**
-Ціль: Повністю усунути динамічні алокації (new/delete) у гарячих циклах генерації та стрімінгу, замінивши їх на pre-allocated буфери та pools, щоб позбутися GC spikes, які часто маскуються під "важку логіку" і спричиняють 40-70 FPS падіння.
-
-- **1. Аналіз поточного стану (ChunkGenerator.cs, ChunkManager.cs):** Burst jobs вже використовують NativeArray (добре, бо не GC). Але C# частини: у ChunkManager lists/dicts для черг (pending, active) можуть resize, що викликає алокації. У генерації: якщо є List<> або array resize в циклах — проблеми. Сейв/лоад може алокувати strings/bytes.
-
-- **2. Pre-allocate основні структури:**
-   - У ChunkManager.cs замінити динамічні колекції:
-     - Замість `List<ChunkCoord> _pending` — `NativeList<ChunkCoord> _pending` з pre-allocated capacity (наприклад, 1000).
-     - Для dict: замість Dictionary — UnsafeHashMap або звичайний array з індексами.
-     - Додати `[SerializeField] int preallocCapacity = 2000;` для всіх черг.
-
-- **3. Впровадити object pooling для Mesh та Chunk:**
-   - Додати `ObjectPool<Mesh> _meshPool` та `ObjectPool<Chunk> _chunkPool` у ChunkManager.
-   - При створенні chunk: `var chunk = _chunkPool.Get();` замість new.
-   - При видаленні: `_chunkPool.Return(chunk);`
-   - Аналогічно для Mesh: pool для reuse mesh objects.
-
-- **4. Додати arena allocator для генерації:**
-   - У ChunkGenerator.cs: замість new NativeArray в кожному job — мати static pool NativeArray'ів.
-   - Для noise: pre-allocate `NativeArray<float> _noiseBuffer = new NativeArray<float>(chunkSize*chunkSize*chunkSize, Allocator.Persistent);` і reuse.
-   - У Execute() використовувати slice цього буфера замість new.
-
-- **5. Контроль алокацій у мешингу:**
-   - У GreedyMesher/MeshBuilder: замість List<Vector3> для vertices — NativeList або pre-allocated array.
-   - Якщо resize трапляється — замінити на Clear() + AddRange() з перевіркою capacity.
-
-- **6. Моніторинг алокацій:**
-   - У VoxelDebugHUD додати "GC Allocs: X MB/frame" використовуючи ProfilerRecorder або Unity's Profiler API.
-   - Запускати з Memory Profiler для пошуку джерел.
-
-- **7. Тестування:**
-   - Запустити гру з великим світом, моніторити FPS та GC у Profiler (Window > Analysis > Profiler).
-   - Якщо spikes — знайти джерело (наприклад, resize list) і замінити.
-   - Перевірити, чи зникли 40-70 FPS падіння після оптимізації.
-
-- **8. Потенційні зміни в інших файлах:**
-   - ChunkPool.cs: Вже є pool для chunk'ів — розширити на mesh.
-   - ChunkGenerator.cs: Змінити на використання pre-alloc buffers замість new у Execute().
-   - GreedyMesher.cs: Замінити динамічні lists на NativeList або pooled arrays.
-   - VoxelDebugHUD.cs: Додати GC monitoring у DrawSummary().
-   - Система сейву: Якщо використовує strings/bytes — pool їх або використовувати NativeArray.
-
-**Переваги:** Повна відсутність GC spikes, стабільний FPS навіть при інтенсивній генерації. Недоліки: Більше коду для управління pools, трохи більше пам'яті на pre-alloc. Почати з ключових місць (черги, mesh), потім генерація.
-
-9. Заборона синхронних бар'єрів
-Перевір:
-mutex у гарячих шляхах
-atomic з cache-line bouncing
-condition_variable, що прокидає main thread
-Один невдалий бар'єр = падіння FPS, незалежно від потоків.
-
-**Детальний план реалізації:**
-Ціль: Усунути всі синхронні бар'єри (mutex, atomic з bouncing, condition_variable) з гарячих шляхів стрімінгу та генерації, замінивши їх на lock-free або асинхронні альтернативи, бо навіть один бар'єр може вбити FPS незалежно від кількості потоків.
-
-- **1. Аналіз поточного стану (ChunkManager.cs, системи сейву):** Burst jobs асинхронні (добре). Але: сейв використовує Thread + ConcurrentQueue, що може мати locks. У Update() — якщо є lock() для черг — проблеми. Atomic operations у гарячих циклах можуть спричиняти cache-line bouncing між cores.
-
-- **2. Замінити ConcurrentQueue на lock-free:**
-   - Для сейву: замість ConcurrentQueue<byte[]> — використовувати SPSC (single producer single consumer) queue або UnsafeQueue.
-   - У ChunkManager для черг: якщо використовуєш Concurrent — замінити на звичайні Queue<> з доступом тільки з main thread.
-
-- **3. Усунути atomic у гарячих циклах:**
-   - Якщо є Interlocked у ProcessGenJobs/ProcessMeshJobs — замінити на локальні змінні або розділити роботу.
-   - Для shared data: використовувати double-buffering або copy-on-write замість locks.
-
-- **4. Зробити сейв повністю асинхронним:**
-   - Замість Thread у Update() — використовувати Job System або Task.Run() без блокування main thread.
-   - Додати callback для завершення сейву, щоб не чекати у Update().
-
-- **5. Моніторити синхронізацію:**
-   - У Profiler (CPU Usage) шукати "Wait" або "Lock" у timeline.
-   - Додати у VoxelDebugHUD "Sync Wait Time: X ms" використовуючи Stopwatch для критичних секцій.
-
-- **6. Тестування:**
-   - Запустити з інтенсивним стрімінгом (швидкий рух), моніторити CPU threads у Profiler.
-   - Якщо FPS падає — перевірити, чи немає waits (наприклад, сейв блокує main).
-   - Порівняти з/без бар'єрів — різниця повинна бути значною.
-
-- **7. Потенційні зміни в інших файлах:**
-   - Система сейву (наприклад, у Scripts/Voxel/Save/): Замінити Thread на JobHandle або async Task.
-   - ChunkManager.cs: Перевірити всі lock() та Interlocked, замінити.
-   - VoxelDebugHUD.cs: Додати sync monitoring у DrawSummary().
-   - Якщо використовуєш custom threads — замінити на Unity's Job System для кращої інтеграції.
-
-**Переваги:** Стабільний multi-threading без bottleneck'ів, кращий scaling на багато cores. Недоліки: Складніше код, потребує lock-free структур. Почати з усунення очевидних locks у Update(), потім сейв.
-
-10. Свідоме "викидання роботи"
-VS не намагається бути чесним.
-Якщо:
-гравець різко повернувся
-або змінив напрям
-Черги:
-чистяться
-задачі скасовуються
-результати ігноруються
-Якщо ти "доводиш усе до кінця" — ти програєш.
-Жорсткий висновок
-40–70 FPS під час стримінгу означає:
-немає frame budget
-немає обмеження інтеграції
-немає деградації якості в часі
-або є синхронний вузол у неправильному місці
-Це не питання "додати ще оптимізацію".
-Це питання хто має право з’їдати кадр.
-Якщо хочеш — можу рознести:
-типовий pipeline кадру і показати, де саме ти втрачаєш FPS
-або дати конкретний "анти-спайк" дизайн для стримінгу чанків
-
-**Детальний план реалізації:**
-Ціль: Впровадити агресивне скасування роботи при різких змінах напрямку гравця (поворот, стрибок): чистити черги, скасовувати running jobs, ігнорувати результати, бо "доводити до кінця" = програш у швидкості адаптації до нових пріоритетів.
-
-- **1. Аналіз поточного стану (ChunkManager.cs, PlayerTracker.cs):** RebuildPendingQueue() при зміні центру центрує pending на новий центр, але не скасовує вже running jobs (gen/mesh). Це призводить до марної роботи на чанки, які виходять з нового радіусу.
-
-- **2. Додати систему cancellation для jobs:**
-   - У ChunkManager додати `CancellationTokenSource _cancellationSource = new CancellationTokenSource();`
-   - Для кожного job (gen/mesh) додати token: `JobHandle handle = job.Schedule(token);`
-   - При rebuild (MaintainRadius) або швидкій зміні: `_cancellationSource.Cancel(); _cancellationSource = new CancellationTokenSource();` — скасувати всі поточні jobs.
-
-- **3. Агресивне очищення черг:**
-   - При швидкому русі (distance > threshold у PlayerTracker): clear _pending, _remeshQueue, _integrationQueue.
-   - Додати threshold: `[SerializeField] float workDropDistance = 10f;` // якщо гравець пройшов >10 одиниць — drop роботу.
-
-- **4. Ігнорувати результати скасованих jobs:**
-   - У ProcessGenJobs/ProcessMeshJobs: якщо job.IsCompleted але token.IsCancellationRequested — не обробляти результат, просто Dispose().
-   - Це дозволяє швидше звільнити ресурси для нової роботи.
-
-- **5. Інтегрувати з ViewConePrioritizer:**
-   - При повороті камери — якщо dot product змінився значно — ініціювати rebuild та cancellation.
-   - У PlayerTracker додати tracking попереднього напрямку.
-
-- **6. Ліміт на скасування:**
-   - Не скасовувати усе завжди — тільки при значних змінах, щоб уникнути "jitter" (скасувати-відновити).
-
-- **7. Тестування:**
-   - Рухатися швидко, різко повертатися (стрибок з поворотом камери).
-   - Моніторити, чи не зависає (старий jobs скасовані), чи швидко з'являються нові чанки.
-   - У VoxelDebugHUD додати "Jobs Cancelled: X this frame".
-   - Якщо зависає — налаштувати threshold або додати delay перед cancellation.
-
-- **8. Потенційні зміни в інших файлах:**
-   - ChunkViewConePrioritizer.cs: Інтегрувати з cancellation при зміні view cone.
-   - PlayerTracker.cs: Додати tracking швидкості/напрямку для trigger'а cancellation.
-   - VoxelDebugHUD.cs: Додати cancellation stats у summary.
-   - Burst jobs: Додати підтримку CancellationToken (якщо Unity дозволяє).
-
-**Переваги:** Швидке відновлення при змінах напрямку, менше марної роботи, плавніший UX. Недоліки: Потеря прогресу (але це навмисне), складніше управління jobs. Почати з простого: clear черг при великих змінах, додавати cancellation пізніше.
 
 Фаза 3: Виживання - Core механіки (5 місяців)
 
@@ -581,7 +214,6 @@ VS integration: erosion in distortion via noise; apply to strata for inversions.
 - [ ] Greedy meshing між чанками
 - [ ] Lazy removal: clear columns lazy.
 - [ ] For Late phases: гібрид: greedy для статичного, cull‑only для редагованого + фоновий greedy‑ребілд 
-- [ ] **Occlusion Culling** (перевірка висот/оточення)
 - [ ] **Memory Pooling** (для блоків/mesh buffers)
 
 //////////////////

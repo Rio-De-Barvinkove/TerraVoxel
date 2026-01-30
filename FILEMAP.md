@@ -1,37 +1,47 @@
 # FILEMAP
 
-Оновлено: 2026-01-21
+Оновлено: 2026-01-23
 
 ## Структура voxel-підсистеми (Assets/Scripts/Voxel)
 - Core/
   - `VoxelConstants.cs` — константи масштабу (ChunkSize=32, ColumnChunks=8, VoxelSize=0.1m).
   - `VoxelMath.cs` — clamp‑утиліти для безпечних конвертацій координат.
-  - `ChunkCoord.cs` — координата чанка (X,Y,Z), хеш/ToString.
+- `ChunkCoord.cs` — координата чанка (X,Y,Z), легкий GetHashCode/Equals/ToString.
   - `VoxelMaterial.cs` — ushort enum (Air, Dirt, Stone, Sand, Water).
   - `ChunkData.cs` — буфери NativeArray<ushort> Materials, NativeArray<float> Density (опційний); Index/Bounds; Allocate/Dispose.
-  - `Chunk.cs` — MonoBehaviour для інстансу чанка; тримає MeshFilter/Renderer/Collider, Mesh; ApplyMesh; ставить дефолтний URP Lit матеріал.
+- `Chunk.cs` — MonoBehaviour для інстансу чанка; MeshFilter/Renderer/Collider + Mesh; ApplyMesh/ApplySharedMesh вмикають renderer за наявності mesh; LodStep, UsesSvo, LodStartTime.
   - `ChunkPool.cs` — пул Chunk-інстансів; активує отримані.
 
 - Generation/
   - `WorldGenConfig.cs` (SO) — Seed, ChunkSize, ColumnChunks, BaseHeight, HeightScale, HorizontalScale, EnableRivers, DefaultMaterialIndex; safe‑spawn платформа (EnableSafeSpawn, SizeChunks, Thickness, MaterialIndex, Snap, Revalidate).
   - `NoiseStack.cs` (SO) — масив NoiseLayer (Type: Perlin/Simplex/Voronoi, Scale, Octaves, Persistence, Lacunarity, Weight).
   - `RockStrataConfig.cs` (SO) — болванка для товщин шарів (sed/met/ig).
-  - `IChunkGenerator.cs` — інтерфейс генератора.
-  - `ChunkGenerator.cs` — Burst IJobParallelFor заповнює Materials за heightmap; шуми з NoiseStack у NativeArray; матеріал з DefaultMaterialIndex.
+  - `IChunkGenerator.cs` — інтерфейс генератора (Schedule з опційним startIndex/count для slicing).
+  - `ChunkGenerator.cs` — Burst IJobParallelFor для heightmap; підтримує генерацію по діапазону (slicing).
 
 - Meshing/
   - `MeshData.cs` — NativeList<Vertex/Index/Normal>, Dispose.
-  - `GreedyMesher.cs` — Burst greedy‑merge по 3 осях, face‑culling, коректне CW winding; підтримка NeighborData для меж чанків.
+  - `GreedyMesher.cs` — Burst greedy‑merge, face‑culling; NeighborData для меж чанків; опційний масштаб вокселя.
   - `MeshBuilder.cs` — копіює MeshData в Unity Mesh через NativeArray view.
 
 - Streaming/
   - `PlayerTracker.cs` — перетворення world→chunk координат.
   - `ChunkTask.cs` — enum стани (PendingGen/…); struct для даних задач (не використовується поки).
-  - `ChunkManager.cs` — стрімінг чанків, `_pending`/`maxSpawnsPerFrame`, ремеш‑черга `maxRemeshPerFrame`, safe‑spawn платформа + snap, jobs gen/mesh, preload, гібридні сейви, колайдери on/off, streaming pause.
-  - `ChunkJobHandles.cs` — хендли Job + NativeArray буфери для gen/mesh.
-  - `StreamingTimeBudget.cs` — ліміт часу на стрімінг за кадр.
-  - `ChunkPhysicsOptimizer.cs` — колайдери тільки в активному радіусі.
-  - `ChunkViewConePrioritizer.cs` — пріоритет pending‑черги по напрямку камери.
+- `ChunkManager.cs` — стрімінг чанків, pending/remesh/integration, streaming budget, preload, safe‑spawn + snap (safeSpawnTimeoutSeconds, fallback unsnapped), gen/mesh jobs, data cache (TryLoadFromCache з mod invalidation по GetDeltaCount), mesh cache (shared Mesh, hash з LodStep/neighbors/density, size‑based eviction по vertex count, memory pressure eviction), work‑drop epoch, reverse‑LOD по часу, gen slicing, адаптивні ліміти (memory + graphicsMemoryThresholdMb), removal time‑budget, pending HashSet; integration lock (_integrationLock) та recursion guards (maxRebuildNeighborsDepth, maxRequestRemeshNeighborsDepth); pendingQueueCap + DropOnePendingOldest (viewCone TryRemoveLowestPriority); ProcessPending + view cone angle (work drop); RequestRemesh з Y bounds (ColumnChunks); TryGetChunk false при chunk=null/gen; ApplyChunkLayer рекурсивно (SetLayerRecursively); far‑range LOD stub (_farRangeRenderQueue, ProcessFarRangeLod, enableFarRangeLod, farRangeRadius); при увімкненому view‑cone — pending у ChunkViewConePrioritizer; повний LOD (upgrade/downgrade), інтеграція occlusion/SVO.
+  - `ChunkJobHandles.cs` — хендли Job + буфери gen/mesh (epoch/hash/lodStep).
+  - `StreamingTimeBudget.cs` — ліміт часу на стрімінг за кадр; примітка про Jobs/Burst для оптимізації.
+- `ChunkPhysicsOptimizer.cs` — колайдери тільки в активному радіусі; вмикання лише якщо mesh має vertices.
+  - `ChunkViewConePrioritizer.cs` — пріоритетна черга (heap) O(log n) dequeue; EnqueueWithPriority(coord, center, player) з обчисленням score при додаванні; ComputeScore (нормалізовані distance/view/visual), динамічний surface band з WorldGenConfig; TryRemoveLowestPriority(out coord) для drop при cap; IsInViewCone(coord, center, player) для work‑drop по куту; Clear() обрізає capacity; без fallback при порожній черзі.
+- LOD/
+  - `ChunkLodLevel.cs` — struct для LOD‑рівня (MinDistance, MaxDistance, LodStep, Hysteresis, Mode); IsValid (non‑negative, MaxDistance >= MinDistance); ChunkLodMode: Mesh, Svo, Billboard, None.
+  - `ChunkLodSettings.cs` (SO) — налаштування LOD: список рівнів, hysteresis, mode (Mesh/SVO/Billboard/None), ring‑based distance calc; OnValidate (overlap/duplicate попередження); GetDetailRank (LodStep + Mode); TryGetLevelForDistance з fallback за MaxDistance; ResolveLevel з hysteresis.
+- Occlusion/
+  - `ChunkOcclusionCuller.cs` — frustum culling + optional raycast occlusion; окрема система, не чіпає геймплей.
+- Svo/
+  - `SvoVolume.cs` — структура SVO (Node з ChildMask/Material/FirstChild, recursive tree).
+  - `SvoBuilder.cs` — побудова SVO з ChunkData (recursive subdivision, uniform region detection).
+  - `SvoMeshBuilder.cs` — генерація Mesh з SVO (cube‑based для leaf nodes).
+  - `SvoManager.cs` — кеш SVO‑мешів, hash‑based reuse, LRU evict; read‑mostly, не для setBlock().
 
 - Rendering/
   - `VoxelMaterialLibrary.cs` (SO) — Texture2DArray, TriplanarScale, NormalStrength, DefaultLayerIndex.
@@ -41,14 +51,14 @@
   - `ChunkSaveStub.cs` — JSON‑stub (legacy, не використовується).
   - `ProfilerHooks.cs` — простий Stopwatch wrapper (stub).
   - `VoxelAnalysisMode.cs` — F2 fly/no‑clip, freeze streaming, shadow toggle, cursor lock; увімкнено в release за замовчуванням.
-  - `VoxelDebugHUD.cs` — HUD, профайлер графіків, CSV‑експорт, async summary‑лог.
+  - `VoxelDebugHUD.cs` — HUD, графіки, CSV‑експорт, async summary‑лог, черги/інтеграція.
 
 - Save/
   - `ChunkSaveBinary.cs` — бінарний формат, magic+version+flags; LZ4/GZip (v1) декомпресія; матеріали (ushort) + опційна щільність; CRC.
   - `ChunkModBinary.cs` — бінарні дельти (index+material ushort), LZ4, CRC.
   - `ChunkSaveMode.cs` — enum режимів сейву + ChunkMeta.
-  - `ChunkSaveManager.cs` — async save‑черга, атомарний запис, load on spawn, save on unload/destroy; worldId/region‑папки.
-  - `ChunkModManager.cs` — менеджер модифікацій (delta‑сейви), async/atomic; пакетні правки вокселів.
+  - `ChunkSaveManager.cs` — async save‑черга, атомарний запис, load on spawn, save on unload/destroy; worldId/region‑папки; join timeout.
+  - `ChunkModManager.cs` — менеджер модифікацій (delta‑сейви), async/atomic; пакетні правки; join timeout.
   - `ChunkHybridSaveManager.cs` — правила delta vs snapshot.
   - `VoxelModDebugInput.cs` — режим взаємодії (B), перемикання dig/build (V), raycast, brush size 1‑10, форми, підсвітка.
   - `Lz4Codec.cs` — C# LZ4‑кодек (вбудований, без зовнішніх залежностей).
@@ -61,15 +71,17 @@
 
 ## Потік даних (мінімальна реалізація)
 1) `ChunkManager.Update` оновлює jobs (gen/mesh), підтримує радіуси, _pending/_preload, ремеш/видалення.
-2) `ProcessPending` бере до `maxSpawnsPerFrame` → `SpawnChunk` (pending може бути пріоритизований view‑cone).
+2) `ProcessPending` бере до `maxSpawnsPerFrame` з pending: при увімкненому view‑cone — `ChunkViewConePrioritizer.TryDequeue` (O(log n)), інакше `_pending.Dequeue`; при workDropAngleDeg > 0 і viewCone — skip spawn для coords поза view cone (IsInViewCone); додавання в pending — EnqueueWithPriority або _pending.Enqueue; при pendingQueueCap — DropOnePendingOldest (viewCone TryRemoveLowestPriority або _pending.Dequeue); PendingCount враховує viewCone.Count.
 3) `SpawnChunk`: Allocate `ChunkData` → спроба snapshot‑load (hybrid або save manager) → якщо немає, планується gen‑job.
 4) Завершення gen‑job: apply safe‑spawn (якщо треба), apply delta‑mods → план mesh‑job.
-5) Завершення mesh‑job: `Chunk.ApplyMesh`, ремеш сусідів, активація колайдера за умовами.
-6) При `RemoveChunk` (вихід з радіуса) `ChunkHybridSaveManager` або `ChunkSaveManager` + `ChunkModManager` → atomic write; при `OnDestroy` — save all активних.
+5) Завершення mesh‑job: постановка в integration queue → `Chunk.ApplyMesh` (ліміт/кадр), ремеш сусідів, колайдери за умовами.
+6) `ProcessFullLod` (якщо `enableFullLod`): перевіряє дистанцію, обирає LOD‑рівень з `ChunkLodSettings`, виконує upgrade/downgrade (mesh або SVO) з cooldown.
+7) `ChunkOcclusionCuller.Tick`: frustum culling + optional raycast, вимикає renderer для occluded чанків.
+8) При `RemoveChunk` (вихід з радіуса) `ChunkHybridSaveManager` або `ChunkSaveManager` + `ChunkModManager` → atomic write; `SvoManager.ReleaseForChunk`; при `OnDestroy` — save all активних.
 
 ## Що вже зроблено / статус TODO
-- Готово: константи/структури/пул; генератор (heightmap, Burst); greedy‑meshing з neighbor‑culling; стрімінг із чергою/лімітом + ремеш‑чергою; тріпланар шейдер+SO+биндер; LZ4‑chunk save (async + atomic); 256‑палітра; analysis mode (noclip, freeze streaming, HUD, toggle shadows).
-- Немає (потрібно доробити): strata/rivers/biomes/erosion; вода/LOD/occlusion; greedy‑зшивання між чанками; повноцінний save/load менеджер (світ/інв/позиція); рушійний контролер гравця (зовнішній).
+- Готово: константи/структури/пул; генератор (heightmap, Burst) + slicing; greedy‑meshing з neighbor‑culling; стрімінг із чергами/лімітами + інтеграція; view‑cone з пріоритетною чергою (heap, TryDequeue, EnqueueWithPriority, TryRemoveLowestPriority, IsInViewCone, ComputeScore, surface band); mesh cache (hash LodStep/neighbors/density, size‑based eviction, memory pressure); data cache з mod invalidation; integration lock + recursion guards; safe spawn timeout + fallback; pending cap drop oldest; work drop + view cone angle; RequestRemesh Y bounds; TryGetChunk null/gen; ApplyChunkLayer recursive; adaptive limits (memory + GPU); reverse‑LOD апгрейд; повний LOD (ChunkLodLevel IsValid, Mode Billboard/None; ChunkLodSettings OnValidate, GetDetailRank, fallback за MaxDistance); occlusion culling (frustum + raycast); SVO core (volume builder + mesh builder + cache); far‑range LOD stub (черга _farRangeRenderQueue, ProcessFarRangeLod cap); StreamingTimeBudget примітка Jobs/Burst; тріпланар шейдер+SO+биндер; LZ4‑chunk save (async + atomic); 256‑палітра; analysis mode.
+- Немає (потрібно доробити): strata/rivers/biomes/erosion; вода; far‑range LOD pipeline (реальний spawn render‑only чанків поза unloadRadius з low LOD/SVO); greedy‑зшивання між чанками; повноцінний save/load менеджер (світ/інв/позиція); рушійний контролер гравця (зовнішній).
 
 ### Палітра 256 кольорів (індекси → базові кольори × яскравість)
 - Сгенеровано в `Assets/Editor/PaletteTextureArrayBuilder.cs`.
@@ -115,13 +127,17 @@
 - Додай `ChunkManager` у сцену, задай Player (камера), WorldGen/NoiseStack, loadRadius, maxSpawnsPerFrame, optional chunkPrefab (можна залишити None).
 - Додай `ChunkSaveManager` на той самий GameObject, задай WorldGenConfig; налаштуй `loadOnSpawn`, `saveOnUnload`, `saveOnDestroy`, `compress`, `asyncWrite`, `regionSize` за потребою.
 - Матеріал: зроби URP матеріал на `TerraVoxel/VoxelTriplanarURP`, вкажи Texture2DArray, TriplanarScale~0.1, LayerIndex=0; признач на префаб Chunk або через `VoxelMaterialBinder` + `VoxelMaterialLibrary`.
+- LOD (опційно): створи SO `ChunkLodSettings`, налаштуй рівні (MinDistance/MaxDistance/LodStep/Hysteresis/Mode); на `ChunkManager` встанови `enableFullLod=true`, признач `lodSettings`.
+- Occlusion (опційно): додай `ChunkOcclusionCuller` на той самий GameObject, налаштуй `frustumCulling`, `raycastOcclusion`, `maxChecksPerFrame`.
+- SVO (опційно): додай `SvoManager` на той самий GameObject; SVO використовується автоматично якщо LOD‑рівень має `Mode=Svo`.
 
 ## Відомі обмеження/артефакти
 - Немає greedy‑зшивання між чанками (тільки cull на межах).
 - Колонкова висота обмежується `ColumnChunks`; для тестів став 1.
-- Немає LOD.
+- Far‑range LOD: черга _farRangeRenderQueue заповнюється (enableFarRangeLod, farRangeRadius), але spawn render‑only чанків з low LOD/SVO ще не реалізовано; LOD працює в межах активного радіуса.
+- Немає fade‑переходів LOD (hard swap + hysteresis).
 - Немає контролера камери/гравця у репо.
-- Немає води/освітлення/оклюзії, лише простий ламберт у шейдері.
+- Немає води/освітлення, лише простий ламберт у шейдері.
 
 ## Налаштування за замовчуванням (рекомендовано для тесту)
 - `WorldGenConfig`: ChunkSize=32, ColumnChunks=1, BaseHeight=8..16, HeightScale=12..24, HorizontalScale=0.015..0.02, Seed=будь-який.
@@ -130,8 +146,9 @@
 
 ## Що робити далі (пріоритети)
 1) Шви між чанками: кеш сусідніх даних, зняття граней тільки якщо сусідній чанк має блок.
-2) Greedy merge у мешері + простий LOD (дальній чанк — агрегація).
+2) Greedy merge у мешері.
 3) Профайлінг HUD: час gen/mesh/apply, активні чанки, трикутники.
 4) Strata/rivers: використати RockStrataConfig + NoiseStack (heightmask), зберігати матеріал по шарах.
-5) Вода/occlusion: рівні 0–7, висотний light/ambient простий.
+5) Вода: рівні 0–7, висотний light/ambient простий.
+6) Far‑range LOD pipeline: реалізувати spawn render‑only чанків з _farRangeRenderQueue (low LOD/SVO поза unloadRadius); зараз лише черга + cap.
 

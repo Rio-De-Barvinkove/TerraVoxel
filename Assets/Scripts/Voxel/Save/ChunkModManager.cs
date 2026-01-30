@@ -26,6 +26,7 @@ namespace TerraVoxel.Voxel.Save
         [SerializeField] bool useRegionFolders = true;
         [SerializeField] int regionSize = 32;
         [SerializeField] bool unloadModsOnChunkUnload = true;
+        [SerializeField] int workerJoinTimeoutMs = 200;
 
         readonly Dictionary<ChunkCoord, Dictionary<int, ushort>> _mods = new Dictionary<ChunkCoord, Dictionary<int, ushort>>();
         readonly Dictionary<ChunkCoord, ChunkMeta> _meta = new Dictionary<ChunkCoord, ChunkMeta>();
@@ -340,7 +341,8 @@ namespace TerraVoxel.Voxel.Save
             _signal?.Set();
             if (_worker != null)
             {
-                _worker.Join();
+                if (!_worker.Join(workerJoinTimeoutMs))
+                    Debug.LogWarning("[ChunkModManager] Mod worker did not stop in time.");
                 _worker = null;
             }
             _signal?.Dispose();

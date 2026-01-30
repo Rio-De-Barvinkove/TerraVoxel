@@ -21,7 +21,17 @@ namespace TerraVoxel.Voxel.Core
 
         public bool Equals(ChunkCoord other) => X == other.X && Y == other.Y && Z == other.Z;
         public override bool Equals(object obj) => obj is ChunkCoord other && Equals(other);
-        public override int GetHashCode() => HashCode.Combine(X, Y, Z);
+        public override int GetHashCode()
+        {
+            unchecked
+            {
+                int hash = 17;
+                hash = hash * 31 + X;
+                hash = hash * 31 + Y;
+                hash = hash * 31 + Z;
+                return hash;
+            }
+        }
         public override string ToString() => $"ChunkCoord({X},{Y},{Z})";
     }
 }

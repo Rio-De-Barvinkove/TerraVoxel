@@ -2,6 +2,10 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
+    /// <summary>
+    /// Frame-time budget for streaming. If not using Burst/Jobs for gen/mesh,
+    /// consider moving heavy work into Jobs and using this budget to cap main-thread time.
+    /// </summary>
     [System.Serializable]
     public class StreamingTimeBudget
     {

@@ -226,7 +226,8 @@ namespace TerraVoxel.Voxel.Meshing
             byte fallbackMaterialIndex,
             NativeArray<MaskCell> mask,
             NativeArray<ushort> empty,
-            ref MeshData meshData)
+            ref MeshData meshData,
+            float voxelScale = 0f)
         {
             meshData.Clear();
 
@@ -245,7 +246,7 @@ namespace TerraVoxel.Voxel.Meshing
             {
                 Materials = data.Materials,
                 Size = data.Size,
-                Scale = VoxelConstants.VoxelSize,
+                Scale = voxelScale > 0f ? voxelScale : VoxelConstants.VoxelSize,
                 Vertices = meshData.Vertices,
                 Triangles = meshData.Triangles,
                 Normals = meshData.Normals,

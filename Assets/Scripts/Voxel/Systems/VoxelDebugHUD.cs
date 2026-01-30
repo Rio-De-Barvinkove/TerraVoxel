@@ -24,6 +24,7 @@ namespace TerraVoxel.Voxel.Systems
         [SerializeField] bool writeSummaryToFile = true;
         [SerializeField] string summaryFileName = "WorldLogger.performance.csv";
         [SerializeField] int graphSamples = 300;
+        [SerializeField] int summaryJoinTimeoutMs = 200;
 
         enum HudMode { Off, Compact, Extended }
         HudMode _mode = HudMode.Compact;
@@ -232,16 +233,18 @@ namespace TerraVoxel.Voxel.Systems
             string baseText =
                 $"FPS: {_fps:0.0}\n" +
                 $"Active: {chunkManager.ActiveCount}  Pending: {chunkManager.PendingCount}  Spawned: {chunkManager.SpawnedLastFrame}\n" +
-                $"IntegrationQ: {chunkManager.IntegrationQueueCount}  Integrated: {chunkManager.IntegrationsLastFrame}\n" +
+                $"IntegrationQ: {chunkManager.IntegrationQueueCount}  Integrated: {chunkManager.IntegrationsLastFrame}  Integrate: {chunkManager.LastIntegrationMs} ms\n" +
+                $"GenJobs: {chunkManager.GenJobsCount}  MeshJobs: {chunkManager.MeshJobsCount}  RemeshQ: {chunkManager.RemeshQueueCount}  RemoveQ: {chunkManager.RemoveQueueCount}\n" +
+                $"PreloadQ: {chunkManager.PreloadQueueCount}  Preloaded: {chunkManager.PreloadedCount}\n" +
                 $"ChunkSize: {chunkManager.ChunkSize}  Columns: {chunkManager.ColumnChunks}  Radius: {chunkManager.LoadRadius}\n" +
                 $"Gen: {chunkManager.LastGenMs} ms  Mesh: {chunkManager.LastMeshMs} ms  Total: {chunkManager.LastTotalMs} ms\n" +
                 $"Last: {chunkManager.LastSpawnCoord}";
 
-            GUI.Label(new Rect(offset.x, offset.y, 520f, 140f), baseText, _style);
+            GUI.Label(new Rect(offset.x, offset.y, 520f, 170f), baseText, _style);
 
             if (_mode == HudMode.Compact) return;
 
-            float startY = offset.y + 140f;
+            float startY = offset.y + 170f;
             DrawGraph(new Rect(offset.x, startY, 520f, 80f), _cpuMs, "CPU ms", Color.green);
             DrawGraph(new Rect(offset.x, startY + 90f, 520f, 80f), _gpuMs, "GPU ms", Color.cyan, allowNA: true);
             DrawGraph(new Rect(offset.x, startY + 180f, 520f, 80f), _vramMb, "VRAM MB", Color.yellow);
@@ -378,7 +381,8 @@ namespace TerraVoxel.Voxel.Systems
             _summarySignal?.Set();
             if (_summaryWorker != null)
             {
-                _summaryWorker.Join();
+                if (!_summaryWorker.Join(summaryJoinTimeoutMs))
+                    Debug.LogWarning("[VoxelHUD] Summary worker did not stop in time.");
                 _summaryWorker = null;
             }
             _summarySignal?.Dispose();

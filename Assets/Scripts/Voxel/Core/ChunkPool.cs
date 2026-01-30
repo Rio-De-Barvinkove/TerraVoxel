@@ -16,6 +16,7 @@ namespace TerraVoxel.Voxel.Core
         {
             _prefab = prefab;
             _parent = parent;
+            PrepareChunk(_prefab);
         }
 
         public Chunk Get()
@@ -23,19 +24,31 @@ namespace TerraVoxel.Voxel.Core
             if (_pool.Count > 0)
             {
                 var chunk = _pool.Dequeue();
+                PrepareChunk(chunk);
                 chunk.gameObject.SetActive(true);
                 return chunk;
             }
 
             var instance = Object.Instantiate(_prefab, _parent);
+            PrepareChunk(instance);
             instance.gameObject.SetActive(true);
             return instance;
         }
 
         public void Return(Chunk chunk)
         {
+            PrepareChunk(chunk);
             chunk.gameObject.SetActive(false);
             _pool.Enqueue(chunk);
+        }
+
+        static void PrepareChunk(Chunk chunk)
+        {
+            if (chunk == null) return;
+            var collider = chunk.GetComponent<MeshCollider>();
+            if (collider == null) return;
+            collider.sharedMesh = null;
+            collider.enabled = false;
         }
     }
 }

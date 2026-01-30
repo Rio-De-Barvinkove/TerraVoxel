@@ -107,6 +107,22 @@ namespace TerraVoxel.Voxel.Streaming
 
                 if (shouldEnable == isActive) continue;
 
+                // Only enable collider if chunk has a valid mesh with vertices
+                if (shouldEnable)
+                {
+                    Mesh mesh = chunk.GetRenderMesh();
+                    if (mesh == null || mesh.vertexCount == 0)
+                    {
+                        // Chunk has no mesh yet - don't enable collider
+                        if (isActive)
+                        {
+                            chunk.SetColliderEnabled(false);
+                            _physicsActive.Remove(coord);
+                        }
+                        continue;
+                    }
+                }
+
                 chunk.SetColliderEnabled(shouldEnable);
                 if (shouldEnable)
                     _physicsActive.Add(coord);

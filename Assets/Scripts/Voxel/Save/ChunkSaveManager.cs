@@ -27,6 +27,7 @@ namespace TerraVoxel.Voxel.Save
         [SerializeField] bool asyncWrite = true;
         [SerializeField] bool useRegionFolders = true;
         [SerializeField] int regionSize = 32;
+        [SerializeField] int workerJoinTimeoutMs = 200;
 
         readonly ConcurrentQueue<ChunkSaveRequest> _queue = new ConcurrentQueue<ChunkSaveRequest>();
         AutoResetEvent _signal;
@@ -159,7 +160,8 @@ namespace TerraVoxel.Voxel.Save
             _signal?.Set();
             if (_worker != null)
             {
-                _worker.Join();
+                if (!_worker.Join(workerJoinTimeoutMs))
+                    Debug.LogWarning("[ChunkSaveManager] Save worker did not stop in time.");
                 _worker = null;
             }
             _signal?.Dispose();
