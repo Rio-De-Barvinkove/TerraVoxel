@@ -8,6 +8,7 @@ namespace TerraVoxel.Voxel.Occlusion
     /// <summary>
     /// Occlusion culling for chunk renderers: frustum and optional raycast.
     /// Uses fixed maxChecksPerFrame and tickBudgetMs; consider adaptive limits for highly variable load.
+    /// Raycast occlusion is applied only to full-detail mesh chunks (!UsesSvo &amp;&amp; LodStep &lt;= 1); LOD/SVO chunks are skipped for consistent bounds and performance.
     /// </summary>
     [DisallowMultipleComponent]
     public class ChunkOcclusionCuller : MonoBehaviour
@@ -29,6 +30,8 @@ namespace TerraVoxel.Voxel.Occlusion
         [SerializeField] float maxRayDist = 200f;
         [Tooltip("Max ms per Tick; fixed budget. System overload may cause timing drift.")]
         [SerializeField] float tickBudgetMs = 5f;
+        [Tooltip("If true, skip raycasts when no occluder in chunk bounds sphere (reduces raycasts when chunk is clearly visible).")]
+        [SerializeField] bool useCoarseSphereCheck = false;
 
         struct Candidate
         {
@@ -41,10 +44,13 @@ namespace TerraVoxel.Voxel.Occlusion
         readonly List<Candidate> _candidates = new List<Candidate>(256);
         readonly HashSet<ChunkCoord> _activeCoordsThisTick = new HashSet<ChunkCoord>();
         readonly object _occludedLock = new object();
+        readonly List<ChunkCoord> _restoreBuffer = new List<ChunkCoord>(256);
         static readonly Vector3[] BoundsCorners = new Vector3[8];
+        static readonly float[] CornerDistSq = new float[8];
         bool _wasEnabled;
         float _maxRayDistSq;
         static bool _warnedLayerMissing;
+        static bool _warnedLayerEmpty;
 
         void OnValidate()
         {
@@ -101,6 +107,7 @@ namespace TerraVoxel.Voxel.Occlusion
 
             _candidates.Sort((a, b) => a.DistSq.CompareTo(b.DistSq));
 
+            // _candidates reused each frame (Clear + Add); Candidate is struct, no per-item allocation.
             float startTime = Time.realtimeSinceStartup;
             float budgetSec = tickBudgetMs > 0 ? tickBudgetMs * 0.001f : float.MaxValue;
             int checks = 0;
@@ -117,16 +124,17 @@ namespace TerraVoxel.Voxel.Occlusion
                 Bounds bounds = GetChunkBounds(chunk, manager.ChunkSize);
 
                 bool visible = true;
-                if (frustumCulling && planes != null && !GeometryUtility.TestPlanesAABB(planes, bounds))
-                    visible = false;
-
-                if (visible && raycastOcclusion && !chunk.UsesSvo && chunk.LodStep <= 1)
+                if (frustumCulling && planes != null)
                 {
-                    if (candidate.DistSq <= _maxRayDistSq)
-                    {
-                        if (!AnyRayUnblocked(camPos, bounds, raycastMask))
-                            visible = false;
-                    }
+                    if (!GeometryUtility.TestPlanesAABB(planes, bounds))
+                        visible = false;
+                }
+
+                // Raycast occlusion only for full-detail mesh chunks; LOD/SVO chunks skipped for consistent bounds and performance.
+                if (visible && raycastOcclusion && candidate.DistSq <= _maxRayDistSq && !chunk.UsesSvo && chunk.LodStep <= 1)
+                {
+                    if (!AnyRayUnblocked(camPos, bounds, raycastMask))
+                        visible = false;
                 }
 
                 if (!visible)
@@ -149,7 +157,15 @@ namespace TerraVoxel.Voxel.Occlusion
 
         LayerMask GetRaycastMask()
         {
-            if (string.IsNullOrEmpty(occluderLayerName)) return occluderMask;
+            if (string.IsNullOrEmpty(occluderLayerName))
+            {
+                if (!_warnedLayerEmpty)
+                {
+                    _warnedLayerEmpty = true;
+                    Debug.LogWarning("[ChunkOcclusionCuller] Occluder layer name is empty; using occluderMask.");
+                }
+                return occluderMask;
+            }
             int layer = LayerMask.NameToLayer(occluderLayerName);
             if (layer < 0)
             {
@@ -163,12 +179,26 @@ namespace TerraVoxel.Voxel.Occlusion
             return (LayerMask)(1 << layer);
         }
 
-        /// <summary>Tests 8 corners + center only; partial visibility through gaps may be missed. raycastPadding is fixed.</summary>
+        /// <summary>Tests 8 corners + center; partial visibility through gaps may be missed. Optional coarse CheckSphere skips raycasts when no occluder in bounds sphere; when occluder is present, only 4 nearest corners are raycast to reduce cost.</summary>
         bool AnyRayUnblocked(Vector3 camPos, Bounds bounds, LayerMask mask)
         {
+            bool occluderInSphere = false;
+            if (useCoarseSphereCheck)
+            {
+                float r = bounds.extents.magnitude;
+                if (r > 0.0001f && !Physics.CheckSphere(bounds.center, r, mask, QueryTriggerInteraction.Ignore))
+                    return true;
+                occluderInSphere = true;
+            }
             FillBoundsCorners(bounds);
             float padding = raycastPadding;
-            for (int i = 0; i < 8; i++)
+            int rayCount = 8;
+            if (occluderInSphere)
+            {
+                SortCornersByDistanceTo(camPos);
+                rayCount = 4;
+            }
+            for (int i = 0; i < rayCount; i++)
             {
                 Vector3 target = BoundsCorners[i];
                 Vector3 dir = target - camPos;
@@ -178,13 +208,34 @@ namespace TerraVoxel.Voxel.Occlusion
                 if (!Physics.Raycast(camPos, dir, dist - padding, mask, QueryTriggerInteraction.Ignore))
                     return true;
             }
-            Vector3 centerDir = bounds.center - camPos;
-            float centerDist = centerDir.magnitude;
-            if (centerDist <= padding) return true;
-            centerDir /= centerDist;
-            if (!Physics.Raycast(camPos, centerDir, centerDist - padding, mask, QueryTriggerInteraction.Ignore))
-                return true;
+            if (rayCount == 8)
+            {
+                Vector3 centerDir = bounds.center - camPos;
+                float centerDist = centerDir.magnitude;
+                if (centerDist <= padding) return true;
+                centerDir /= centerDist;
+                if (!Physics.Raycast(camPos, centerDir, centerDist - padding, mask, QueryTriggerInteraction.Ignore))
+                    return true;
+            }
             return false;
+        }
+
+        /// <summary>Sorts static BoundsCorners in place by distance to origin (nearest first). Used to raycast only 4 nearest corners when coarse sphere detected an occluder. Uses static CornerDistSq to avoid per-call allocation.</summary>
+        static void SortCornersByDistanceTo(Vector3 origin)
+        {
+            for (int i = 0; i < 8; i++)
+                CornerDistSq[i] = (BoundsCorners[i] - origin).sqrMagnitude;
+            for (int i = 0; i < 7; i++)
+            {
+                int best = i;
+                for (int j = i + 1; j < 8; j++)
+                    if (CornerDistSq[j] < CornerDistSq[best]) best = j;
+                if (best != i)
+                {
+                    float d = CornerDistSq[i]; CornerDistSq[i] = CornerDistSq[best]; CornerDistSq[best] = d;
+                    var v = BoundsCorners[i]; BoundsCorners[i] = BoundsCorners[best]; BoundsCorners[best] = v;
+                }
+            }
         }
 
         static void FillBoundsCorners(Bounds b)
@@ -201,36 +252,37 @@ namespace TerraVoxel.Voxel.Occlusion
             BoundsCorners[7] = new Vector3(min.x, max.y, max.z);
         }
 
-        /// <summary>Uses mesh bounds when valid and non-empty; otherwise fallback from chunkSize (may be inaccurate for culling).</summary>
+        /// <summary>Uses mesh bounds when valid and non-empty; otherwise fallback from chunkSize. Returns fallback if chunk or chunk.transform is null/destroyed. Fallback size is clamped to avoid zero/negative bounds.</summary>
         Bounds GetChunkBounds(Chunk chunk, int chunkSize)
         {
+            float sizeF = chunkSize > 0 ? chunkSize * VoxelConstants.VoxelSize : 1f;
+            if (sizeF < 0.001f) sizeF = 0.001f;
+            Vector3 fallbackSize = new Vector3(sizeF, sizeF, sizeF);
             if (chunk == null)
-            {
-                float size = chunkSize * VoxelConstants.VoxelSize;
-                return new Bounds(Vector3.zero, new Vector3(size, size, size));
-            }
+                return new Bounds(Vector3.zero, fallbackSize);
+            if (chunk.transform == null)
+                return new Bounds(Vector3.zero, fallbackSize);
             Mesh mesh = chunk.GetRenderMesh();
             if (mesh != null && mesh.vertexCount > 0 && mesh.bounds.size.sqrMagnitude > 0.0001f)
             {
                 Vector3 center = chunk.transform.position + mesh.bounds.center;
                 return new Bounds(center, mesh.bounds.size);
             }
-            float sizeF = chunkSize * VoxelConstants.VoxelSize;
             Vector3 fallbackCenter = chunk.transform.position + new Vector3(sizeF * 0.5f, sizeF * 0.5f, sizeF * 0.5f);
-            return new Bounds(fallbackCenter, new Vector3(sizeF, sizeF, sizeF));
+            return new Bounds(fallbackCenter, fallbackSize);
         }
 
-        /// <summary>Restores renderers for all occluded coords. Chunks already unloaded are skipped (TryGetChunk returns false).</summary>
+        /// <summary>Restores renderers for all occluded coords. Chunks already unloaded are skipped (TryGetChunk returns false); no SetRendererEnabled on unloaded chunks. Reuses _restoreBuffer to avoid per-call allocation.</summary>
         void RestoreAll(ChunkManager manager)
         {
-            List<ChunkCoord> toRestore;
             lock (_occludedLock)
             {
-                toRestore = new List<ChunkCoord>(_occluded);
+                _restoreBuffer.Clear();
+                _restoreBuffer.AddRange(_occluded);
                 _occluded.Clear();
             }
             if (manager == null) return;
-            foreach (var coord in toRestore)
+            foreach (var coord in _restoreBuffer)
             {
                 if (manager.TryGetChunk(coord, out var chunk) && chunk != null)
                     chunk.SetRendererEnabled(true);

@@ -13,54 +13,57 @@ namespace TerraVoxel.Voxel.Lod
         [Tooltip("When dist >= this, DefaultLevel uses Mode.None (far-range). 0 = disabled.")]
         public int DefaultLevelFarDistance = 64;
 
+        [Header("Mode weights for GetDetailRank (higher = coarser). Tune for ordering only.")]
+        [SerializeField] int modeMeshWeight = 0;
+        [SerializeField] int modeBillboardWeight = 8;
+        [SerializeField] int modeSvoWeight = 16;
+        [SerializeField] int modeNoneWeight = 32;
+
         [Tooltip("Distance is measured in chunk units (max(|dx|,|dz|)).")]
         public List<ChunkLodLevel> Levels = new List<ChunkLodLevel>();
 
-        /// <summary>1) Exact match: dist in [MinDistance, MaxDistance]. 2) Beyond all ranges: coarsest level with largest MaxDistance (then by detail rank). 3) Gap: returns DefaultLevel(dist) and false.</summary>
+        /// <summary>Single pass: exact match dist in [MinDistance, MaxDistance], else coarsest with largest MaxDistance (then by detail rank). Gap returns DefaultLevel(dist) and false.</summary>
         public bool TryGetLevelForDistance(int dist, out ChunkLodLevel level)
         {
+            level = DefaultLevel(dist);
             if (Levels == null || Levels.Count == 0)
-            {
-                level = DefaultLevel(dist);
                 return false;
-            }
+
+            int maxMaxDist = -1;
+            int coarsestIndex = -1;
+            int coarsestRank = -1;
 
             for (int i = 0; i < Levels.Count; i++)
             {
                 var candidate = Levels[i];
                 if (!candidate.IsValid) continue;
+
                 if (dist >= candidate.MinDistance && dist <= candidate.MaxDistance)
                 {
                     level = candidate;
                     return true;
                 }
-            }
 
-            int maxMaxDist = -1;
-            int coarsestIndex = -1;
-            int coarsestRank = -1;
-            for (int i = 0; i < Levels.Count; i++)
-            {
-                var candidate = Levels[i];
-                if (!candidate.IsValid) continue;
-                if (dist <= candidate.MaxDistance) continue;
-                int rank = GetDetailRank(candidate);
-                bool better = maxMaxDist < candidate.MaxDistance ||
-                    (maxMaxDist == candidate.MaxDistance && rank > coarsestRank);
-                if (better)
+                if (dist > candidate.MaxDistance)
                 {
-                    maxMaxDist = candidate.MaxDistance;
-                    coarsestIndex = i;
-                    coarsestRank = rank;
+                    int rank = GetDetailRank(candidate);
+                    bool better = maxMaxDist < candidate.MaxDistance ||
+                        (maxMaxDist == candidate.MaxDistance && rank > coarsestRank);
+                    if (better)
+                    {
+                        maxMaxDist = candidate.MaxDistance;
+                        coarsestIndex = i;
+                        coarsestRank = rank;
+                    }
                 }
             }
+
             if (coarsestIndex >= 0)
             {
                 level = Levels[coarsestIndex];
                 return true;
             }
 
-            // No exact range match and dist not beyond all MaxDistance (e.g. gap in Levels): use default for predictable behaviour.
             level = DefaultLevel(dist);
             return false;
         }
@@ -85,7 +88,7 @@ namespace TerraVoxel.Voxel.Lod
             return false;
         }
 
-        /// <summary>Target level from dist; then hysteresis: when moving to coarser, keep current if dist &lt;= current.MaxDistance + hysteresis; when moving to finer, keep current if dist &gt;= current.MinDistance - hysteresis. Uses DefaultHysteresis when level.Hysteresis is 0.</summary>
+        /// <summary>Target level from dist; then hysteresis: when moving to coarser, keep current if dist &lt;= current.MaxDistance + upHysteresis; when moving to finer, keep current if dist &gt;= current.MinDistance - downHysteresis (downHysteresis = hysteresis/2). Uses DefaultHysteresis when level.Hysteresis is 0.</summary>
         public ChunkLodLevel ResolveLevel(int dist, int currentStep, ChunkLodMode currentMode)
         {
             ChunkLodLevel target = DefaultLevel(dist);
@@ -100,21 +103,17 @@ namespace TerraVoxel.Voxel.Lod
 
             int hysteresis = current.Hysteresis > 0 ? current.Hysteresis : DefaultHysteresis;
             hysteresis = Mathf.Min(hysteresis, ChunkLodLevel.MaxHysteresis);
+            int upHysteresis = hysteresis;
+            int downHysteresis = Mathf.Max(0, hysteresis / 2);
+
             int currentDetailRank = GetDetailRank(current);
             int targetDetailRank = GetDetailRank(target);
             bool movingToCoarser = targetDetailRank > currentDetailRank;
 
-            if (movingToCoarser)
-            {
-                if (dist <= current.MaxDistance + hysteresis)
-                    return current;
-            }
-            else
-            {
-                int downHyst = hysteresis;
-                if (dist >= current.MinDistance - downHyst)
-                    return current;
-            }
+            if (movingToCoarser && dist <= current.MaxDistance + upHysteresis)
+                return current;
+            if (!movingToCoarser && dist >= current.MinDistance - downHysteresis)
+                return current;
 
             return target;
         }
@@ -135,15 +134,17 @@ namespace TerraVoxel.Voxel.Lod
             };
         }
 
-        /// <summary>Higher rank = coarser (less detail). Weights are for ordering only (Mesh &lt; Billboard &lt; Svo &lt; None); tune if needed.</summary>
+        /// <summary>Higher rank = coarser (less detail). Uses configurable mode weights; stepRank * (modeWeight + 1).</summary>
         int GetDetailRank(ChunkLodLevel level)
         {
             int stepRank = Mathf.Max(1, level.LodStep);
-            int modeWeight = level.Mode == ChunkLodMode.None ? 32 : (level.Mode == ChunkLodMode.Svo ? 16 : (level.Mode == ChunkLodMode.Billboard ? 8 : 0));
-            return stepRank * (modeWeight + 1);
+            int modeWeight = level.Mode == ChunkLodMode.None ? modeNoneWeight
+                : (level.Mode == ChunkLodMode.Svo ? modeSvoWeight
+                : (level.Mode == ChunkLodMode.Billboard ? modeBillboardWeight : modeMeshWeight));
+            return stepRank * (Mathf.Max(0, modeWeight) + 1);
         }
 
-        /// <summary>Editor-only: sort by MinDistance, warn on duplicate ranges and overlapping ranges. Does not block invalid data.</summary>
+        /// <summary>Editor-only: sort by MinDistance; warn on duplicates and Hysteresis &gt; MaxHysteresis; remove overlapping levels (LogError + RemoveAt).</summary>
         void OnValidate()
         {
             if (Levels == null) return;
@@ -165,13 +166,16 @@ namespace TerraVoxel.Voxel.Lod
                 seen.Add(key);
             }
 
-            for (int i = 1; i < Levels.Count; i++)
+            for (int i = Levels.Count - 1; i >= 1; i--)
             {
                 var prev = Levels[i - 1];
                 var curr = Levels[i];
                 if (!prev.IsValid || !curr.IsValid) continue;
-                if (curr.MinDistance < prev.MaxDistance)
-                    Debug.LogWarning($"[ChunkLodSettings] Overlapping levels: [{prev.MinDistance},{prev.MaxDistance}] and [{curr.MinDistance},{curr.MaxDistance}] at index {i}.");
+                if (curr.MinDistance <= prev.MaxDistance)
+                {
+                    Debug.LogError($"[ChunkLodSettings] Overlapping LOD levels at index {i} ([{curr.MinDistance},{curr.MaxDistance}] vs [{prev.MinDistance},{prev.MaxDistance}]). Removing overlapping level.");
+                    Levels.RemoveAt(i);
+                }
             }
         }
     }
