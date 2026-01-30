@@ -5,6 +5,7 @@ using Unity.Collections;
 using UnityEngine;
 namespace TerraVoxel.Voxel.Svo
 {
+    /// <summary>Builds mesh from SvoVolume. Uses stack-based traversal; for very deep trees an iterative approach may be faster. Mesh color uses only R channel for material index.</summary>
     public static class SvoMeshBuilder
     {
         static readonly float Scale = VoxelConstants.VoxelSize;
@@ -16,6 +17,7 @@ namespace TerraVoxel.Voxel.Svo
             public int Size;
         }
 
+        /// <summary>Fills mesh with geometry from volume. Caller owns mesh; volume must not be disposed during call.</summary>
         public static void BuildMesh(SvoVolume volume, Mesh mesh, byte maxMaterialIndex, byte fallbackMaterialIndex)
         {
             if (volume == null || mesh == null || !volume.Nodes.IsCreated || volume.Nodes.Length == 0) return;
@@ -38,7 +40,7 @@ namespace TerraVoxel.Voxel.Svo
                 {
                     if (node.IsEmptyLeaf) continue;
                     byte resolved = ResolveMaterialIndex(node.Material, maxMaterialIndex, fallbackMaterialIndex);
-                    Color32 color = new Color32(resolved, 0, 0, 255);
+                    Color32 color = new Color32(resolved, 0, 0, 255); // R = material index; extend to RGB if needed
                     AppendCube(volume, ref meshData, origin, size, color);
                     continue;
                 }
@@ -95,6 +97,7 @@ namespace TerraVoxel.Voxel.Svo
             if (!solidPY) AppendQuad(ref data, p010, p110, p111, p011, new Vector3(0, 1, 0), color);
         }
 
+        /// <summary>Voxels outside volume (x,y,z &lt; 0 or &gt;= RootSize) are considered empty (no solid neighbor).</summary>
         static bool HasSolidNeighbor(SvoVolume volume, Vector3 originVoxels, int sizeVoxels, int dx, int dy, int dz)
         {
             int nx = (int)originVoxels.x + dx * sizeVoxels;
@@ -104,6 +107,7 @@ namespace TerraVoxel.Voxel.Svo
             return mat != 0;
         }
 
+        /// <summary>Returns 0 for out-of-bounds (boundary voxels treated as empty).</summary>
         static byte GetMaterialAt(SvoVolume volume, int x, int y, int z)
         {
             int rootSize = volume.RootSize;

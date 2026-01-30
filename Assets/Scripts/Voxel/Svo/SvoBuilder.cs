@@ -23,6 +23,7 @@ namespace TerraVoxel.Voxel.Svo
             public int X0, Y0, Z0, Size, NodeIndex;
         }
 
+        /// <summary>Builds SVO from chunk data. Caller must call volume.Dispose() when done to avoid leaks.</summary>
         public static SvoVolume Build(ChunkData data, int leafSize, in SvoNeighborData? neighborData = null)
         {
             int size = data.Size;
@@ -115,8 +116,10 @@ namespace TerraVoxel.Voxel.Svo
             return false;
         }
 
+        /// <summary>Samples neighbor chunk data. Expects XMin/XMax length >= size^3; YMin/YMax/ZMin/ZMax length >= size^2. Returns 0 if out of bounds.</summary>
         static ushort SampleNeighbor(in SvoNeighborData nb, int x, int y, int z, int size)
         {
+            if (size <= 0) return 0;
             if (x < 0 && nb.XMin.HasValue)
             {
                 int nx = x + size, ny = Mathf.Clamp(y, 0, size - 1), nz = Mathf.Clamp(z, 0, size - 1);
@@ -133,29 +136,30 @@ namespace TerraVoxel.Voxel.Svo
             {
                 int ix = Mathf.Clamp(x, 0, size - 1), iz = Mathf.Clamp(z, 0, size - 1);
                 int idx = ix + iz * size;
-                if (idx < nb.YMin.Value.Length) return nb.YMin.Value[idx];
+                if (idx >= 0 && idx < nb.YMin.Value.Length) return nb.YMin.Value[idx];
             }
             if (y >= size && nb.YMax.HasValue)
             {
                 int ix = Mathf.Clamp(x, 0, size - 1), iz = Mathf.Clamp(z, 0, size - 1);
                 int idx = ix + iz * size;
-                if (idx < nb.YMax.Value.Length) return nb.YMax.Value[idx];
+                if (idx >= 0 && idx < nb.YMax.Value.Length) return nb.YMax.Value[idx];
             }
             if (z < 0 && nb.ZMin.HasValue)
             {
                 int ix = Mathf.Clamp(x, 0, size - 1), iy = Mathf.Clamp(y, 0, size - 1);
                 int idx = ix + iy * size;
-                if (idx < nb.ZMin.Value.Length) return nb.ZMin.Value[idx];
+                if (idx >= 0 && idx < nb.ZMin.Value.Length) return nb.ZMin.Value[idx];
             }
             if (z >= size && nb.ZMax.HasValue)
             {
                 int ix = Mathf.Clamp(x, 0, size - 1), iy = Mathf.Clamp(y, 0, size - 1);
                 int idx = ix + iy * size;
-                if (idx < nb.ZMax.Value.Length) return nb.ZMax.Value[idx];
+                if (idx >= 0 && idx < nb.ZMax.Value.Length) return nb.ZMax.Value[idx];
             }
             return 0;
         }
 
+        /// <summary>O(size^3). May be slow for large regions.</summary>
         static bool IsUniformRegion(ChunkData data, int x0, int y0, int z0, int size, out byte material, out byte density)
         {
             material = 0;
@@ -194,7 +198,7 @@ namespace TerraVoxel.Voxel.Svo
             return true;
         }
 
-        /// <summary>Modal (most frequent non-zero) material in region; density = average if present.</summary>
+        /// <summary>Modal (most frequent non-zero) material in region; density = average if present. O(size^3).</summary>
         static void SampleRegionMaterialAndDensity(ChunkData data, int x0, int y0, int z0, int size, bool useDensity, out byte material, out byte density)
         {
             int[] counts = new int[256];

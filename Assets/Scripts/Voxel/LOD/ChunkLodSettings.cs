@@ -8,6 +8,7 @@ namespace TerraVoxel.Voxel.Lod
     {
         public int DefaultLodStep = 1;
         public ChunkLodMode DefaultMode = ChunkLodMode.Mesh;
+        [Tooltip("Used when level.Hysteresis is 0. Clamped to ChunkLodLevel.MaxHysteresis.")]
         public int DefaultHysteresis = 1;
         [Tooltip("When dist >= this, DefaultLevel uses Mode.None (far-range). 0 = disabled.")]
         public int DefaultLevelFarDistance = 64;
@@ -15,6 +16,7 @@ namespace TerraVoxel.Voxel.Lod
         [Tooltip("Distance is measured in chunk units (max(|dx|,|dz|)).")]
         public List<ChunkLodLevel> Levels = new List<ChunkLodLevel>();
 
+        /// <summary>1) Exact match: dist in [MinDistance, MaxDistance]. 2) Beyond all ranges: coarsest level with largest MaxDistance (then by detail rank). 3) Gap: returns DefaultLevel(dist) and false.</summary>
         public bool TryGetLevelForDistance(int dist, out ChunkLodLevel level)
         {
             if (Levels == null || Levels.Count == 0)
@@ -58,14 +60,7 @@ namespace TerraVoxel.Voxel.Lod
                 return true;
             }
 
-            for (int i = Levels.Count - 1; i >= 0; i--)
-            {
-                var candidate = Levels[i];
-                if (!candidate.IsValid) continue;
-                level = candidate;
-                return true;
-            }
-
+            // No exact range match and dist not beyond all MaxDistance (e.g. gap in Levels): use default for predictable behaviour.
             level = DefaultLevel(dist);
             return false;
         }
@@ -90,6 +85,7 @@ namespace TerraVoxel.Voxel.Lod
             return false;
         }
 
+        /// <summary>Target level from dist; then hysteresis: when moving to coarser, keep current if dist &lt;= current.MaxDistance + hysteresis; when moving to finer, keep current if dist &gt;= current.MinDistance - hysteresis. Uses DefaultHysteresis when level.Hysteresis is 0.</summary>
         public ChunkLodLevel ResolveLevel(int dist, int currentStep, ChunkLodMode currentMode)
         {
             ChunkLodLevel target = DefaultLevel(dist);
@@ -103,6 +99,7 @@ namespace TerraVoxel.Voxel.Lod
                 return target;
 
             int hysteresis = current.Hysteresis > 0 ? current.Hysteresis : DefaultHysteresis;
+            hysteresis = Mathf.Min(hysteresis, ChunkLodLevel.MaxHysteresis);
             int currentDetailRank = GetDetailRank(current);
             int targetDetailRank = GetDetailRank(target);
             bool movingToCoarser = targetDetailRank > currentDetailRank;
@@ -127,17 +124,18 @@ namespace TerraVoxel.Voxel.Lod
             ChunkLodMode mode = DefaultMode;
             if (DefaultLevelFarDistance > 0 && dist >= DefaultLevelFarDistance)
                 mode = ChunkLodMode.None;
+            int hyst = Mathf.Clamp(DefaultHysteresis, 0, ChunkLodLevel.MaxHysteresis);
             return new ChunkLodLevel
             {
                 MinDistance = 0,
                 MaxDistance = int.MaxValue,
                 LodStep = Mathf.Max(1, DefaultLodStep),
-                Hysteresis = DefaultHysteresis,
+                Hysteresis = hyst,
                 Mode = mode
             };
         }
 
-        /// <summary>Higher rank = coarser (less detail). Used to pick coarsest among same MaxDistance and for hysteresis.</summary>
+        /// <summary>Higher rank = coarser (less detail). Weights are for ordering only (Mesh &lt; Billboard &lt; Svo &lt; None); tune if needed.</summary>
         int GetDetailRank(ChunkLodLevel level)
         {
             int stepRank = Mathf.Max(1, level.LodStep);
@@ -145,6 +143,7 @@ namespace TerraVoxel.Voxel.Lod
             return stepRank * (modeWeight + 1);
         }
 
+        /// <summary>Editor-only: sort by MinDistance, warn on duplicate ranges and overlapping ranges. Does not block invalid data.</summary>
         void OnValidate()
         {
             if (Levels == null) return;
@@ -155,6 +154,8 @@ namespace TerraVoxel.Voxel.Lod
             {
                 var a = Levels[i];
                 if (!a.IsValid) continue;
+                if (a.Hysteresis > ChunkLodLevel.MaxHysteresis)
+                    Debug.LogWarning($"[ChunkLodSettings] Hysteresis {a.Hysteresis} at index {i} exceeds MaxHysteresis ({ChunkLodLevel.MaxHysteresis}). Clamp to avoid unexpected behaviour.");
                 var key = (a.MinDistance, a.MaxDistance);
                 if (seen.Contains(key))
                 {

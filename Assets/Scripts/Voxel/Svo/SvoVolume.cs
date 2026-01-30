@@ -5,7 +5,8 @@ namespace TerraVoxel.Voxel.Svo
 {
     /// <summary>
     /// SVO volume with NativeList for Burst/Jobs compatibility and fewer allocations.
-    /// Node uses byte Material + byte Density for smooth LOD; empty leaf has Material==0.
+    /// Node uses byte Material (0–255) and byte Density; empty leaf has Material==0.
+    /// More than 256 materials require mapping. Call Dispose() when done to avoid leaks.
     /// </summary>
     public sealed class SvoVolume
     {
@@ -32,6 +33,7 @@ namespace TerraVoxel.Voxel.Svo
             Nodes = new NativeList<Node>(64, allocator);
         }
 
+        /// <summary>Must be called when done to free native memory; otherwise leak.</summary>
         public void Dispose()
         {
             if (Nodes.IsCreated)

@@ -18,7 +18,7 @@ namespace TerraVoxel.Voxel.Streaming
         [SerializeField] bool ignoreVertical = true;
         [SerializeField] bool includeVerticalDistance = false;
         [SerializeField] float coneHalfAngleDeg = 70f;
-        [Header("Visual Weights (normalized)")]
+        [Header("Visual Weights (not normalized; one may dominate)")]
         [SerializeField] bool useVisualWeights = true;
         [SerializeField] float dotWeight = 1f;
         [SerializeField] float distanceWeight = 1f;
@@ -43,7 +43,7 @@ namespace TerraVoxel.Voxel.Streaming
         public bool Enabled => enable;
         public int Count => _heap.Count;
 
-        /// <summary>Compute normalized score for a chunk (distance, view cone, surface band). Used when enqueueing.</summary>
+        /// <summary>Score for a chunk (distance, view cone, surface band). Called once per enqueue; weights not normalized.</summary>
         public float ComputeScore(ChunkCoord c, ChunkCoord center, Vector3 forward, bool includeVerticalDistance)
         {
             int dx = c.X - center.X;
@@ -77,7 +77,7 @@ namespace TerraVoxel.Voxel.Streaming
             float distanceScoreNorm = 1f / (1f + dist);
             float viewScoreNorm = (dot + 1f) * 0.5f; // [0,1]
             if (inCone)
-                viewScoreNorm = Mathf.Max(viewScoreNorm, 0.5f);
+                viewScoreNorm = Mathf.Max(viewScoreNorm, 0.5f); // boost chunks barely in cone
 
             float visualScoreNorm = 0f;
             if (worldGen != null)
@@ -85,7 +85,7 @@ namespace TerraVoxel.Voxel.Streaming
                 int surfaceY = Mathf.RoundToInt(worldGen.BaseHeight / VoxelConstants.ChunkSize);
                 int absDy = Mathf.Abs(c.Y - surfaceY);
                 if (absDy <= 1)
-                    visualScoreNorm += surfaceBonus;
+                    visualScoreNorm += surfaceBonus; // does not check chunk visibility
                 else if (dy > 0)
                     visualScoreNorm += heightBonus;
                 else if (dy < 0)
@@ -101,7 +101,8 @@ namespace TerraVoxel.Voxel.Streaming
         {
             if (!enable) return;
             Transform view = ResolveViewTransform(player);
-            Vector3 forward = view != null ? view.forward : Vector3.forward;
+            if (view == null) return;
+            Vector3 forward = view.forward;
             if (ignoreVertical)
                 forward.y = 0f;
             if (forward.sqrMagnitude < 0.0001f)
@@ -137,7 +138,7 @@ namespace TerraVoxel.Voxel.Streaming
             return true;
         }
 
-        /// <summary>Remove the lowest-priority entry (smallest score). Used when at cap to drop oldest/lowest.</summary>
+        /// <summary>Remove the lowest-priority entry (smallest score). O(n) to find min in max-heap; heap structure preserved after swap+bubble.</summary>
         public bool TryRemoveLowestPriority(out ChunkCoord coord)
         {
             coord = default;
@@ -159,12 +160,13 @@ namespace TerraVoxel.Voxel.Streaming
             return true;
         }
 
-        /// <summary>True if chunk is within the view cone from center (for work-dropping / prioritization).</summary>
+        /// <summary>True if chunk is within the view cone from center. Forward/to normalized per call (no shared cache).</summary>
         public bool IsInViewCone(ChunkCoord c, ChunkCoord center, Transform player)
         {
             if (!enable) return true;
             Transform view = ResolveViewTransform(player);
-            Vector3 forward = view != null ? view.forward : Vector3.forward;
+            if (view == null) return true;
+            Vector3 forward = view.forward;
             if (ignoreVertical) forward.y = 0f;
             if (forward.sqrMagnitude < 0.0001f) forward = Vector3.forward;
             else forward.Normalize();
@@ -229,7 +231,7 @@ namespace TerraVoxel.Voxel.Streaming
         {
             if (viewTransform != null) return viewTransform;
             if (useMainCamera && Camera.main != null) return Camera.main.transform;
-            return player;
+            return player != null ? player : null;
         }
     }
 }

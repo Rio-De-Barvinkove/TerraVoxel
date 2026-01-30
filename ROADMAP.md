@@ -44,7 +44,6 @@
 - [X] Рендер: URP тріпланарний шейдер, VoxelMaterialLibrary, VoxelMaterialBinder.
 - [X] Палетний Texture2DArray генератор (256 кольорів) + матеріали на шейдері.
 - [X] FILEMAP.md з описом структури/потоків.
-- [X] Черга генерації чанків (pending tasks + ліміт нових чанків за кадр).
 - [X] Safe spawn zone з валідацією колізій.
 - [X] WorldLogger.performance: логування часу генерації/видалення.
 - [X] Налаштування шарів (terrain, objects, player, UI).
@@ -62,8 +61,7 @@
 - [X] Тумблер освітлення (analysis mode, вимкнення тіней).
 - [X] Chunk class: 32x32x32 voxels (float density, uint8_t material); column 8 chunks (VS height 256).
 - [X] **Physics Optimization** (окрема фізика для активних чанків)
-- [X] View‑cone пріоритезація з візуальною вагою (surface/height).
-- [X] View‑cone пріоритетна черга: O(log n) dequeue (heap), EnqueueWithPriority при додаванні, ComputeScore нормалізований (distance/view/visual), динамічний surface band з WorldGenConfig, без fallback/витоку _buffer.
+- [X] View‑cone пріоритетна черга: O(log n) dequeue (heap), EnqueueWithPriority, ComputeScore (distance/view/visual), surface band з WorldGenConfig; TryRemoveLowestPriority O(n), IsInViewCone, ваги не нормалізовані.
 - [X] Streaming work‑drop: epoch + ігнор стейл‑job результатів.
 - [X] Reverse‑LOD у радіусі (low→high апгрейд).
 - [X] Generation slicing (startIndex/count) + HUD черги/інтеграція.
@@ -79,9 +77,13 @@
 - [X] **Pending queue:** drop oldest при cap (DropOnePendingOldest; viewCone TryRemoveLowestPriority); work dropping + view cone (angle check у ProcessPending).
 - [X] **RequestRemesh:** Y bounds (ColumnChunks) для сусідів; TryGetChunk повертає false при chunk=null/gen.
 - [X] **ApplyChunkLayer** рекурсивно (SetLayerRecursively на children).
-- [X] **LOD:** ChunkLodLevel IsValid, Mode Billboard/None; ChunkLodSettings OnValidate (overlap/duplicate), GetDetailRank, TryGetLevelForDistance fallback за MaxDistance, hysteresis.
+- [X] **LOD:** ChunkLodLevel IsValid, MaxHysteresis, Mode Billboard/None; ChunkLodSettings OnValidate (overlap/duplicate, HashSet (int,int)), GetDetailRank інвертований, TryGetLevelForDistance fallback + coarsest по rank, DefaultLevelFarDistance, ResolveLevel симетрична hysteresis.
 - [X] **Far‑range LOD stub:** окрема черга _farRangeRenderQueue для render‑only поза unloadRadius (ProcessFarRangeLod cap, без spawn).
 - [X] **StreamingTimeBudget:** примітка про Jobs/Burst для оптимізації frame timing.
+- [X] **SVO (харденінг):** SvoBuilder SampleNeighbor bounds + Dispose note; SvoManager lock для кешу, useGpuRaymarch tooltip; SvoMeshBuilder/SvoVolume документація (boundary, color R, Dispose).
+- [X] **Occlusion (харденінг):** ChunkOcclusionCuller lock _occluded, очищення застарілих записів (_activeCoordsThisTick), GetRaycastMask попередження про відсутній шар, документація AnyRayUnblocked/GetChunkBounds/RestoreAll.
+- [X] **ChunkPhysicsOptimizer:** lock _stateLock, tooltips (activeRadius/inactiveRadius, includeVerticalDistance, disablePreloaded), PruneMissingInner doc.
+- [X] **ChunkManager (документація):** моноліт/main thread summary, UpdateAdaptiveLimits/DropWorkQueues/MaybeDropWork/SetPlayerFrozen/ActivatePreloadedChunk/TryInitSafeSpawn/ProcessGenJobs/ProcessMeshJobs XML, work drop tooltips.
 
 ---
 
@@ -95,7 +97,8 @@
 - У **ChunkOcclusionCuller**:  
   - **Enable Occlusion** — увімкнено за замовчуванням.  
   - **Frustum Culling** — обрізання по frustum камери (за замовчуванням увімкнено).  
-  - **Raycast Occlusion** — опційно: приховувати чанки за перешкодами (raycast), за замовчуванням вимкнено (важче для CPU).
+  - **Raycast Occlusion** — опційно: приховувати чанки за перешкодами (raycast), за замовчуванням вимкнено (важче для CPU).  
+  - **maxChecksPerFrame** / **tickBudgetMs** — фіксовані ліміти за кадр; при відсутності шару `occluderLayerName` використовується occluderMask (warning в лог).
 
 ### 2. Повна LOD-система (3–4 рівні, upgrade/downgrade, SVO для дальніх)
 - **ChunkManager → Full LOD System:**
@@ -103,13 +106,13 @@
   - **Chunk Lod Settings** — створи asset: у Project **ПКМ → Create → TerraVoxel → Chunk LOD Settings**, задай ім’я (наприклад `ChunkLodSettings`).
 - У створеному **ChunkLodSettings** заповни **Levels** (відстані в чанках, LodStep, Mode):
   - Приклад: близько — `MinDistance=0`, `MaxDistance=2`, `LodStep=1`, `Mode=Mesh`; далі — `MinDistance=3`, `MaxDistance=6`, `LodStep=2` або `4`, `Mode=Mesh` або `Svo`; ще далі — більший `LodStep` і `Mode=Svo` для SVO-мешу. Режими: **Mesh**, **Svo**, **Billboard**, **None** (ChunkLodLevel.IsValid перевіряє MinDistance/MaxDistance/Hysteresis).
-  - **Hysteresis** на рівні або **Default Hysteresis** у налаштуванні — запобігає мерехтінню на границях відстаней. OnValidate попереджає про перекриття/дублікати рівнів; для відстаней поза всіма MaxDistance використовується найгрубіший рівень.
+  - **Hysteresis** на рівні або **Default Hysteresis** у налаштуванні — запобігає мерехтінню; 0 <= Hysteresis <= ChunkLodLevel.MaxHysteresis. OnValidate попереджає про перекриття/дублікати та перевищення MaxHysteresis; для відстаней поза всіма MaxDistance — coarsest по GetDetailRank; **DefaultLevelFarDistance** — для далеких відстаней DefaultLevel повертає Mode.None.
 - Поле **Lod Settings** у ChunkManager прив’яжи до цього asset.
 
 ### 3. SVO (окtree-меші для дальніх LOD)
 - На тому ж GameObject, що й ChunkManager, додай компонент **SvoManager** (або він підтягнеться автоматично).
 - У ChunkManager у полі **SVO → Svo Manager** має бути посилання (якщо порожньо — заповниться після Play).
-- У **SvoManager**: **Enable Svo** за замовчуванням `true`; **Max Cache Entries** / **Evict Per Frame** — підлаштуй під пам’ять і FPS.
+- У **SvoManager**: **Enable Svo** за замовчуванням `true`; **Max Cache Entries** / **Evict Per Frame** — підлаштуй під пам’ять і FPS. Кеш синхронізований (lock); **useGpuRaymarch** не реалізовано (при true TryGetOrBuildMesh повертає false).
 
 Підсумок: **Enable Full Lod** + посилання на **Chunk Lod Settings** + компоненти **ChunkOcclusionCuller** і **SvoManager** на тому ж об’єкті — і LOD, occlusion та SVO працюють разом.
 

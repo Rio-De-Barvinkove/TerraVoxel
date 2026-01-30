@@ -15,6 +15,9 @@ namespace TerraVoxel.Voxel.Streaming
 {
     /// <summary>
     /// Maintains active chunks around a tracked transform. Spawns limited count per frame.
+    /// Monolithic: streaming, LOD, physics, caching, save, adaptive limits in one class (consider splitting into ChunkLoader/LodManager etc.).
+    /// Intended to run on main thread (Update); job handles are only completed on main thread.
+    /// _pendingSet + _pending duplicate coords for O(1) membership; data/mesh caches use eviction (LRU-style). NativeArray/Dispose is caller responsibility where applicable.
     /// </summary>
     public class ChunkManager : MonoBehaviour
     {
@@ -44,12 +47,16 @@ namespace TerraVoxel.Voxel.Streaming
         [Header("Removal Budget")]
         [SerializeField] float removalBudgetMs = 0.75f;
         [Header("Work Dropping")]
+        [Tooltip("If player moves this many chunks (XZ), consider dropping queues.")]
         [SerializeField] int workDropDistance = 8;
+        [Tooltip("If view angle changes by this many degrees, consider dropping queues.")]
         [SerializeField] float workDropAngleDeg = 70f;
+        [Tooltip("If move direction differs from view by this many degrees, consider dropping.")]
         [SerializeField] float workDropMoveAngleDeg = 70f;
         [SerializeField] float workDropCooldown = 0.5f;
         [Header("Pending Queue")]
         [SerializeField] int pendingQueueCap = 4096;
+        [Tooltip("If player center moves this many chunks (XZ), pending queue is rebuilt.")]
         [SerializeField] int pendingResetDistance = 8;
         [Header("View Cone")]
         [SerializeField] ChunkViewConePrioritizer viewCone;
@@ -353,6 +360,7 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
+        /// <summary>Freezes/unfreezes player for safe spawn. Looks for PlayerSimpleController (by type name) and CharacterController; optional — no error if missing.</summary>
         void SetPlayerFrozen(bool frozen)
         {
             if (player == null) return;
@@ -475,6 +483,7 @@ namespace TerraVoxel.Voxel.Streaming
                 physicsOptimizer.Tick(this);
         }
 
+        /// <summary>Resets limits to base each frame; reduces them if over gen/mesh/integration/memory/GPU threshold. Limits recover when not throttled (cooldown expires).</summary>
         void UpdateAdaptiveLimits()
         {
             if (!enableAdaptiveLimits)
@@ -541,6 +550,7 @@ namespace TerraVoxel.Voxel.Streaming
 
             if (throttled && adaptiveCooldown > 0f)
                 _adaptiveUntil = now + adaptiveCooldown;
+            // Limits recover next frame: base values are reapplied at start of UpdateAdaptiveLimits, then reduced only if over threshold.
         }
 
         int EffectiveUnloadRadius()
@@ -559,6 +569,7 @@ namespace TerraVoxel.Voxel.Streaming
             return streamingBudget != null && streamingBudget.IsExceeded();
         }
 
+        /// <summary>When player moved far (workDropDistance) or view angle changed (workDropAngleDeg) or move vs view (workDropMoveAngleDeg), drops queues after cooldown.</summary>
         void MaybeDropWork(ChunkCoord center)
         {
             if (workDropDistance <= 0 && workDropAngleDeg <= 0f)
@@ -635,6 +646,7 @@ namespace TerraVoxel.Voxel.Streaming
             return forward;
         }
 
+        /// <summary>Clears pending/preload/remove/integration queues and keeps only in-range remesh/mesh jobs. Does not check if chunks are still needed for render/physics; MaintainRadius repopulates pending.</summary>
         void DropWorkQueues(ChunkCoord center)
         {
             _pending.Clear();
@@ -722,6 +734,7 @@ namespace TerraVoxel.Voxel.Streaming
                 _remeshAfterIntegration.Add(remeshAfter[i]);
         }
 
+        /// <summary>Activates a preloaded chunk (renderer/collider). Handles chunk/mesh null; queues remesh if mesh missing or low-LOD.</summary>
         void ActivatePreloadedChunk(ChunkCoord coord, Chunk chunk)
         {
             if (!_preloaded.Remove(coord)) return;
@@ -981,6 +994,7 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
+        /// <summary>Completes finished gen jobs on main thread; applies safe spawn, delta, schedules mesh. Exceptions in Complete() or subsequent logic are not caught.</summary>
         void ProcessGenJobs()
         {
             if (_genJobs.Count == 0) return;
@@ -1073,6 +1087,7 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
+        /// <summary>Completes finished mesh jobs on main thread; queues integration. Exceptions in Complete() or subsequent logic are not caught.</summary>
         void ProcessMeshJobs()
         {
             if (_meshJobs.Count == 0) return;
@@ -2143,6 +2158,7 @@ namespace TerraVoxel.Voxel.Streaming
 
         }
 
+        /// <summary>Initializes safe spawn region and optionally freezes player until anchor chunk is meshed. Assumes chunks/mesh will be generated; timeout unfreezes if not ready.</summary>
         void TryInitSafeSpawn()
         {
             if (worldGen == null || !worldGen.EnableSafeSpawn || player == null) return;

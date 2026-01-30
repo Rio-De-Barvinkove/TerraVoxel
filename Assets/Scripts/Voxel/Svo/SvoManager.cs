@@ -11,10 +11,12 @@ namespace TerraVoxel.Voxel.Svo
         [SerializeField] bool enableSvo = true;
         [SerializeField] int maxCacheEntries = 256;
         [SerializeField] int evictPerFrame = 4;
+        [Tooltip("Not implemented; when true, TryGetOrBuildMesh returns false.")]
         [SerializeField] bool useGpuRaymarch = false;
 
         readonly Dictionary<ulong, SvoMeshEntry> _cache = new Dictionary<ulong, SvoMeshEntry>();
         readonly Dictionary<ChunkCoord, ulong> _chunkHashes = new Dictionary<ChunkCoord, ulong>();
+        readonly object _cacheLock = new object();
 
         struct SvoMeshEntry
         {
@@ -31,23 +33,24 @@ namespace TerraVoxel.Voxel.Svo
             if (!data.Materials.IsCreated || data.Materials.Length == 0) return false;
 
             if (useGpuRaymarch)
-            {
                 return false;
-            }
 
             ulong hash = ComputeHash(data, leafSize, 0);
-            if (_chunkHashes.TryGetValue(coord, out var oldHash) && oldHash != hash)
-                ReleaseForChunk(coord);
-
-            if (_cache.TryGetValue(hash, out var entry) && entry.Mesh != null)
+            lock (_cacheLock)
             {
-                entry.RefCount++;
-                entry.LastUsedFrame = Time.frameCount;
-                entry.UseCount++;
-                _cache[hash] = entry;
-                _chunkHashes[coord] = hash;
-                mesh = entry.Mesh;
-                return true;
+                if (_chunkHashes.TryGetValue(coord, out var oldHash) && oldHash != hash)
+                    ReleaseForChunkInner(coord);
+
+                if (_cache.TryGetValue(hash, out var entry) && entry.Mesh != null)
+                {
+                    entry.RefCount++;
+                    entry.LastUsedFrame = Time.frameCount;
+                    entry.UseCount++;
+                    _cache[hash] = entry;
+                    _chunkHashes[coord] = hash;
+                    mesh = entry.Mesh;
+                    return true;
+                }
             }
 
             var volume = SvoBuilder.Build(data, leafSize);
@@ -56,15 +59,18 @@ namespace TerraVoxel.Voxel.Svo
                 var builtMesh = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 };
                 SvoMeshBuilder.BuildMesh(volume, builtMesh, maxMaterialIndex, fallbackMaterialIndex);
 
-                _cache[hash] = new SvoMeshEntry
+                lock (_cacheLock)
                 {
-                    Mesh = builtMesh,
-                    RefCount = 1,
-                    LastUsedFrame = Time.frameCount,
-                    UseCount = 1
-                };
-                _chunkHashes[coord] = hash;
-                EvictIfNeeded();
+                    _cache[hash] = new SvoMeshEntry
+                    {
+                        Mesh = builtMesh,
+                        RefCount = 1,
+                        LastUsedFrame = Time.frameCount,
+                        UseCount = 1
+                    };
+                    _chunkHashes[coord] = hash;
+                    EvictIfNeededInner();
+                }
                 mesh = builtMesh;
                 return true;
             }
@@ -76,6 +82,14 @@ namespace TerraVoxel.Voxel.Svo
 
         public void ReleaseForChunk(ChunkCoord coord)
         {
+            lock (_cacheLock)
+            {
+                ReleaseForChunkInner(coord);
+            }
+        }
+
+        void ReleaseForChunkInner(ChunkCoord coord)
+        {
             if (!_chunkHashes.TryGetValue(coord, out var hash)) return;
             _chunkHashes.Remove(coord);
 
@@ -84,11 +98,20 @@ namespace TerraVoxel.Voxel.Svo
                 entry.RefCount = Mathf.Max(0, entry.RefCount - 1);
                 _cache[hash] = entry;
                 if (entry.RefCount == 0 && _cache.Count > maxCacheEntries)
-                    EvictIfNeeded();
+                    EvictIfNeededInner();
             }
         }
 
+        /// <summary>LRU-style eviction (UseCount, LastUsedFrame). May be suboptimal for highly dynamic scenes.</summary>
         void EvictIfNeeded()
+        {
+            lock (_cacheLock)
+            {
+                EvictIfNeededInner();
+            }
+        }
+
+        void EvictIfNeededInner()
         {
             if (maxCacheEntries <= 0 || _cache.Count <= maxCacheEntries) return;
             int budget = evictPerFrame > 0 ? evictPerFrame : int.MaxValue;
@@ -112,11 +135,19 @@ namespace TerraVoxel.Voxel.Svo
                 }
 
                 if (!found) break;
-                RemoveEntry(bestKey);
+                RemoveEntryInner(bestKey);
             }
         }
 
         void RemoveEntry(ulong hash)
+        {
+            lock (_cacheLock)
+            {
+                RemoveEntryInner(hash);
+            }
+        }
+
+        void RemoveEntryInner(ulong hash)
         {
             if (_cache.TryGetValue(hash, out var entry))
             {
