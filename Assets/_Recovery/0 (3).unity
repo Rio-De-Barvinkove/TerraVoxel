@@ -378,11 +378,11 @@ MonoBehaviour:
   chunkPrefab: {fileID: 2085738739}
   worldGen: {fileID: 11400000, guid: 182e37385ea739840907a153355f5e7d, type: 2}
   noiseStack: {fileID: 11400000, guid: 7be5acb9b4187354ea266e68d3f3b281, type: 2}
-  loadRadius: 8
-  unloadRadius: 10
+  loadRadius: 20
+  unloadRadius: 30
   addColliders: 1
   physicsOptimizer: {fileID: 448214055}
-  maxSpawnsPerFrame: 4
+  maxSpawnsPerFrame: 20
   maxRemeshPerFrame: 12
   maxRemovalsPerFrame: 3
   maxGenJobsInFlight: 4
@@ -403,6 +403,8 @@ MonoBehaviour:
   pendingResetDistance: 12
   viewCone: {fileID: 448214056}
   enableFullLod: 1
+  enableFarRangeLod: 1
+  farRangeRadius: 6
   lodSettings: {fileID: 11400000, guid: 868f81b94f723684ea3dd726391b24e2, type: 2}
   maxLodTransitionsPerFrame: 2
   lodTransitionCooldown: 0.2
@@ -434,6 +436,12 @@ MonoBehaviour:
   meshSlowMs: 24
   integrationSlowMs: 8
   adaptiveCooldown: 0.5
+  adaptiveDrawCallThreshold: 0
+  memoryPressureThresholdMb: 0
+  graphicsMemoryThresholdMb: 0
+  safeSpawnTimeoutSeconds: 10
+  maxRebuildNeighborsDepth: 2
+  maxRequestRemeshNeighborsDepth: 1
 --- !u!4 &448214048
 Transform:
   m_ObjectHideFlags: 0
@@ -651,15 +659,13 @@ MonoBehaviour:
   ignoreVertical: 1
   includeVerticalDistance: 0
   coneHalfAngleDeg: 70
-  maxScan: 512
   useVisualWeights: 1
-  viewConeBonus: 3
   dotWeight: 1
   distanceWeight: 1
   surfaceBonus: 1.5
   heightBonus: 0.75
   undergroundPenalty: 0.5
-  surfaceBand: 0
+  worldGen: {fileID: 0}
 --- !u!114 &448214057
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -675,6 +681,7 @@ MonoBehaviour:
   enableSvo: 1
   maxCacheEntries: 256
   evictPerFrame: 4
+  useGpuRaymarch: 0
 --- !u!114 &448214058
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -694,8 +701,13 @@ MonoBehaviour:
   occluderMask:
     serializedVersion: 2
     m_Bits: 4294967295
+  occluderLayerName: Terrain
   raycastPadding: 0.1
   ignorePreloaded: 1
+  cullPreloaded: 0
+  maxRayDist: 200
+  tickBudgetMs: 5
+  useCoarseSphereCheck: 0
 --- !u!4 &492199355 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 2884546045553303299, guid: 691d201409042b143af4574240386e30, type: 3}

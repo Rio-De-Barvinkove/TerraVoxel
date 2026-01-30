@@ -31,7 +31,8 @@ namespace TerraVoxel.Voxel.Svo
             if (leafSize > size) leafSize = size;
 
             var volume = new SvoVolume(size, leafSize, Allocator.TempJob);
-            volume.Nodes.Add(default);
+            var nodes = volume.Nodes;
+            nodes.Add(default);
 
             var queue = new Queue<BuildState>();
             queue.Enqueue(new BuildState { X0 = 0, Y0 = 0, Z0 = 0, Size = size, NodeIndex = 0 });
@@ -46,7 +47,7 @@ namespace TerraVoxel.Voxel.Svo
                 if (sizeCur <= leafSize)
                 {
                     SampleRegionMaterialAndDensity(data, x0, y0, z0, sizeCur, hasDensity, out byte material, out byte density);
-                    volume.Nodes[nodeIndex] = new SvoVolume.Node
+                    nodes[nodeIndex] = new SvoVolume.Node
                     {
                         ChildMask = 0,
                         Material = material,
@@ -58,7 +59,7 @@ namespace TerraVoxel.Voxel.Svo
 
                 if (IsUniformRegion(data, x0, y0, z0, sizeCur, out byte uniformMat, out byte uniformDens))
                 {
-                    volume.Nodes[nodeIndex] = new SvoVolume.Node
+                    nodes[nodeIndex] = new SvoVolume.Node
                     {
                         ChildMask = 0,
                         Material = uniformMat,
@@ -69,9 +70,9 @@ namespace TerraVoxel.Voxel.Svo
                 }
 
                 int childSize = sizeCur / 2;
-                int firstChildIndex = volume.Nodes.Length;
+                int firstChildIndex = nodes.Length;
                 for (int i = 0; i < 8; i++)
-                    volume.Nodes.Add(default);
+                    nodes.Add(default);
 
                 byte mask = 0;
                 for (int i = 0; i < 8; i++)
@@ -86,7 +87,7 @@ namespace TerraVoxel.Voxel.Svo
                     queue.Enqueue(new BuildState { X0 = nx, Y0 = ny, Z0 = nz, Size = childSize, NodeIndex = firstChildIndex + i });
                 }
 
-                volume.Nodes[nodeIndex] = new SvoVolume.Node
+                nodes[nodeIndex] = new SvoVolume.Node
                 {
                     ChildMask = mask,
                     Material = 0,
