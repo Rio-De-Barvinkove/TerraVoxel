@@ -66,7 +66,9 @@ namespace TerraVoxel.Voxel.Streaming
         [SerializeField] bool enableFarRangeLod = false;
         [SerializeField] int farRangeRadius = 6;
         [SerializeField] ChunkLodSettings lodSettings;
-        [SerializeField] int maxLodTransitionsPerFrame = 2;
+        [Tooltip("LOD transitions per frame; higher = faster upgrades when approaching. Default 2 may be slow with many chunks.")]
+        [SerializeField] int maxLodTransitionsPerFrame = 8;
+        [Tooltip("Cooldown (sec) before downgrade; upgrades (approaching) bypass cooldown.")]
         [SerializeField] float lodTransitionCooldown = 0.2f;
         [SerializeField] int maxSvoBuildsPerFrame = 1;
         [Header("Occlusion")]
@@ -1981,20 +1983,11 @@ namespace TerraVoxel.Voxel.Streaming
 
                 var coord = _remeshQueue.Dequeue();
                 _remeshSet.Remove(coord);
-                
-                if (!_active.ContainsKey(coord))
-                {
-                    continue;
-                }
-                if (_meshJobs.ContainsKey(coord))
-                {
-                    // Already meshing, will be handled when mesh completes
-                    continue;
-                }
+
+                if (!_active.ContainsKey(coord)) continue;
+                if (_meshJobs.ContainsKey(coord)) continue;
                 if (IsChunkGenerating(coord))
                 {
-                    // Still generating, will remesh after generation completes
-                    // Re-enqueue to retry later
                     if (_remeshSet.Add(coord))
                         _remeshQueue.Enqueue(coord);
                     continue;
@@ -2006,15 +1999,15 @@ namespace TerraVoxel.Voxel.Streaming
                     continue;
                 }
 
-                if (ScheduleMeshForChunk(coord, 0, 1))
+                int remeshLodStep = GetInitialLodStep(coord);
+                if (ScheduleMeshForChunk(coord, 0, remeshLodStep))
                 {
                     count++;
                 }
                 else
                 {
-                    // ScheduleMeshForChunk failed - likely already in integration or cache pending
-                    // It will be handled via _remeshAfterIntegration or retried later
-                    // Don't re-enqueue to prevent infinite loops
+                    _remeshSet.Add(coord);
+                    _remeshQueue.Enqueue(coord);
                 }
             }
         }
@@ -2044,10 +2037,10 @@ namespace TerraVoxel.Voxel.Streaming
                 int dist = Mathf.Max(Mathf.Abs(coord.X - center.X), Mathf.Abs(coord.Z - center.Z));
                 ChunkLodMode currentMode = chunk.UsesSvo ? ChunkLodMode.Svo : ChunkLodMode.Mesh;
                 int currentStep = Mathf.Max(1, chunk.LodStep);
-
                 var desired = lodSettings.ResolveLevel(dist, currentStep, currentMode);
                 if (desired.Mode == currentMode && desired.LodStep == currentStep) continue;
-                if (lodTransitionCooldown > 0f && now - chunk.LodStartTime < lodTransitionCooldown) continue;
+                bool isUpgrade = desired.LodStep < currentStep;
+                if (!isUpgrade && lodTransitionCooldown > 0f && now - chunk.LodStartTime < lodTransitionCooldown) continue;
                 if (IsChunkBusy(coord) || _integrationSet.Contains(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
 
                 if (desired.Mode == ChunkLodMode.Svo)
