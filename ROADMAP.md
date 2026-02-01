@@ -87,34 +87,127 @@
 
 ---
 
-## Як увімкнути LOD, Occlusion та SVO
+## Оптимізація:
 
-Усі три системи керуються з **ChunkManager** у сцені.
+3. Dual Contouring
+4. Transvoxel
+5. Skip Hidden Faces
+6. Face Culling по чанках
+7. Backface Culling
+8. Frustum Culling
+9. Occlusion Culling (software)
+10. Hierarchical Occlusion Culling
+11. Portal Culling (печери)
+12. Chunk-based Culling
+13. Distance-based Culling
+14. LOD по чанках
+15. LOD по мешах
+16. LOD по матеріалах
+17. LOD по симуляціях
+18. Mesh Simplification для дальніх LOD
+19. Impostors / Billboards
+20. GPU Instancing
+21. SRP Batching
+22. Static Batching
+23. Material Atlasing
+24. Texture Atlasing
+25. Texture Arrays
+26. Virtual Texturing
+27. Mipmapping
+28. Anisotropic Filtering Control
+29. Shader Variant Stripping
+30. Simplified Shaders для вокселів
+31. Compute Shaders для генерації
+32. GPU Meshing
+33. GPU Culling
+34. GPU-driven Rendering
+35. Indirect Draw Calls
+36. Async GPU Readback Control
+37. Chunk Pooling
+38. Mesh Pooling
+39. Object Pooling
+40. Memory Pooling
+41. Struct of Arrays (SoA)
+42. Cache-friendly Data Layout
+43. Bitpacking воксельних даних
+44. Palette-based Voxels
+45. Compression (RLE)
+46. Sparse Voxel Octree (SVO)
+47. DAG-based SVO
+48. Sparse Chunks
+49. Region-based Storage
+50. Paging чанків
+51. Chunk Streaming
+52. Async Loading
+53. Background Generation Threads
+54. Job System
+55. Burst Compilation
+56. SIMD оптимізації
+57. Lock-free Queues
+58. Double Buffering чанків
+59. Dirty Chunk Updates
+60. Partial Mesh Rebuild
+61. Face-level Updates
+62. Greedy Remesh локальних областей
+63. Mesh Stitching між чанками
+64. Neighbor-aware Meshing
+65. Early Exit при генерації
+66. Deterministic Noise Caching
+67. Noise Lookup Tables
+68. Heightmap Hybrid System
+69. Column-based Terrain
+70. 2.5D Terrain Optimization
+71. Cave-only Voxelization
+72. Density Field Thresholding
+73. Signed Distance Fields
+74. SDF Caching
+75. Physics Proxy Meshes
+76. Simplified Collision Meshes
+77. Chunk-level Physics
+78. Sleeping Physics Chunks
+79. Distance-based Physics Disable
+80. AI Tick Throttling
+81. Simulation LOD
+82. Time-sliced Simulation
+83. Event-driven Simulation
+84. Lazy Evaluation
+85. Data-oriented ECS
+86. Archetype-based ECS
+87. System Ordering Optimization
+88. Cache Line Alignment
+89. False Sharing Avoidance
+90. Branch Prediction Optimization
+91. Integer Math замість float
+92. Fixed-point Arithmetic
+93. Fast Hash Functions
+94. Spatial Hashing
+95. Morton Codes (Z-order)
+96. Chunk Index Packing
+97. Bitmask Visibility
+98. Precomputed Neighbor Masks
+99. Deterministic World Seeds
+100. Save Delta Encoding
+101. Region File System
+102. Chunk Diff Saving
+103. Async Save/Load
+104. I/O Batching
+105. Memory-mapped Files
+106. Background Garbage Collection Control
+107. Manual GC Tuning
+108. Allocation-free Update Loops
+109. Frame Budgeting
+110. Adaptive Quality Scaling
+111. Dynamic Resolution Scaling
+112. Fixed Update Decoupling
+113. Simulation Step Quantization
+114. Profiling-driven Hotspot Removal
+115. Conditional Compilation
+116. Editor-only Code Stripping
+117. Debug Code Stripping
+118. Platform-specific Optimizations
+119. CPU Affinity Control
+120. NUMA-aware Allocation
 
-### 1. Occlusion Culling (приховування за камерою)
-- На тому ж GameObject, що й **ChunkManager**, додай компонент **ChunkOcclusionCuller** (або він підтягнеться автоматично через `GetComponent`).
-- У ChunkManager у полі **Occlusion → Chunk Occlusion Culler** має бути посилання на цей компонент (якщо порожньо — збереться після Play).
-- У **ChunkOcclusionCuller**:  
-  - **Enable Occlusion** — увімкнено за замовчуванням.  
-  - **Frustum Culling** — обрізання по frustum камери (за замовчуванням увімкнено).  
-  - **Raycast Occlusion** — опційно: приховувати чанки за перешкодами (raycast), за замовчуванням вимкнено (важче для CPU).  
-  - **maxChecksPerFrame** / **tickBudgetMs** — фіксовані ліміти за кадр; при відсутності шару `occluderLayerName` використовується occluderMask (warning в лог).
-
-### 2. Повна LOD-система (3–4 рівні, upgrade/downgrade, SVO для дальніх)
-- **ChunkManager → Full LOD System:**
-  - Увімкни **Enable Full Lod** = `true`.
-  - **Chunk Lod Settings** — створи asset: у Project **ПКМ → Create → TerraVoxel → Chunk LOD Settings**, задай ім’я (наприклад `ChunkLodSettings`).
-- У створеному **ChunkLodSettings** заповни **Levels** (відстані в чанках, LodStep, Mode):
-  - Приклад: близько — `MinDistance=0`, `MaxDistance=2`, `LodStep=1`, `Mode=Mesh`; далі — `MinDistance=3`, `MaxDistance=6`, `LodStep=2` або `4`, `Mode=Mesh` або `Svo`; ще далі — більший `LodStep` і `Mode=Svo` для SVO-мешу. Режими: **Mesh**, **Svo**, **Billboard**, **None** (ChunkLodLevel.IsValid перевіряє MinDistance/MaxDistance/Hysteresis).
-  - **Hysteresis** на рівні або **Default Hysteresis** у налаштуванні — запобігає мерехтінню; 0 <= Hysteresis <= ChunkLodLevel.MaxHysteresis. OnValidate попереджає про перекриття/дублікати та перевищення MaxHysteresis; для відстаней поза всіма MaxDistance — coarsest по GetDetailRank; **DefaultLevelFarDistance** — для далеких відстаней DefaultLevel повертає Mode.None.
-- Поле **Lod Settings** у ChunkManager прив’яжи до цього asset.
-
-### 3. SVO (окtree-меші для дальніх LOD)
-- На тому ж GameObject, що й ChunkManager, додай компонент **SvoManager** (або він підтягнеться автоматично).
-- У ChunkManager у полі **SVO → Svo Manager** має бути посилання (якщо порожньо — заповниться після Play).
-- У **SvoManager**: **Enable Svo** за замовчуванням `true`; **Max Cache Entries** / **Evict Per Frame** — підлаштуй під пам’ять і FPS. Кеш синхронізований (lock); **useGpuRaymarch** не реалізовано (при true TryGetOrBuildMesh повертає false).
-
-Підсумок: **Enable Full Lod** + посилання на **Chunk Lod Settings** + компоненти **ChunkOcclusionCuller** і **SvoManager** на тому ж об’єкті — і LOD, occlusion та SVO працюють разом.
 
 # ПЛАНИ
 P0 (високий пріоритет)

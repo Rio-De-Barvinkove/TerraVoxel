@@ -24,7 +24,7 @@ namespace TerraVoxel.Voxel.Lod
         /// <summary>Max allowed Hysteresis to avoid unexpected behaviour with large values.</summary>
         public const int MaxHysteresis = 256;
 
-        /// <summary>True if distances non-negative, MaxDistance &gt;= MinDistance (Min=Max allowed), LodStep &gt; 0, and 0 &lt;= Hysteresis &lt;= MaxHysteresis. MaxDistance may be int.MaxValue for unbounded far; callers must avoid overflow (e.g. MaxDistance + Hysteresis).</summary>
+        /// <summary>True if distances non-negative, MaxDistance &gt;= MinDistance (Min=Max allowed), LodStep &gt; 0, and 0 &lt;= Hysteresis &lt;= MaxHysteresis. MaxDistance may be int.MaxValue for unbounded far.</summary>
         public bool IsValid =>
             MinDistance >= 0 &&
             MaxDistance >= 0 &&
@@ -32,6 +32,15 @@ namespace TerraVoxel.Voxel.Lod
             LodStep > 0 &&
             Hysteresis >= 0 &&
             Hysteresis <= MaxHysteresis;
+
+        /// <summary>Safe add for hysteresis: returns Min(MaxDistance + hysteresis, int.MaxValue) to avoid overflow.</summary>
+        public static int MaxDistanceWithHysteresis(int maxDistance, int hysteresis)
+        {
+            if (maxDistance >= int.MaxValue) return int.MaxValue;
+            if (hysteresis <= 0) return maxDistance;
+            long sum = (long)maxDistance + hysteresis;
+            return sum >= int.MaxValue ? int.MaxValue : (int)sum;
+        }
     }
 
     public enum ChunkLodMode

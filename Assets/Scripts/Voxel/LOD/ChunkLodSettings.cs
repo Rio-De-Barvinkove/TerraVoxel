@@ -10,10 +10,10 @@ namespace TerraVoxel.Voxel.Lod
         public ChunkLodMode DefaultMode = ChunkLodMode.Mesh;
         [Tooltip("Used when level.Hysteresis is 0. Clamped to ChunkLodLevel.MaxHysteresis.")]
         public int DefaultHysteresis = 1;
-        [Tooltip("When dist >= this, DefaultLevel uses Mode.None (far-range). 0 = disabled.")]
+        [Tooltip("When dist >= this, DefaultLevel uses Mode.None (far-range). 0 = disabled (DefaultMode always).")]
         public int DefaultLevelFarDistance = 64;
 
-        [Header("Mode weights for GetDetailRank (higher = coarser). Tune for ordering only.")]
+        [Header("Mode weights for GetDetailRank (higher = coarser). Should satisfy Mesh <= Billboard <= Svo <= None.")]
         [Range(0, 256)]
         [SerializeField] int modeMeshWeight = 0;
         [Range(0, 256)]
@@ -122,15 +122,19 @@ namespace TerraVoxel.Voxel.Lod
             if (movingToCoarser)
             {
                 if (current.MaxDistance == int.MaxValue) return current;
-                if (dist <= current.MaxDistance + upHysteresis) return current;
+                int maxWithHyst = ChunkLodLevel.MaxDistanceWithHysteresis(current.MaxDistance, upHysteresis);
+                if (dist <= maxWithHyst) return current;
             }
-            if (!movingToCoarser && dist >= current.MinDistance - downHysteresis)
-                return current;
+            if (!movingToCoarser)
+            {
+                int minWithHyst = current.MinDistance <= downHysteresis ? 0 : current.MinDistance - downHysteresis;
+                if (dist >= minWithHyst) return current;
+            }
 
             return target;
         }
 
-        /// <summary>Default level when no Levels match. When DefaultLevelFarDistance is 0, far-range switch is disabled and DefaultMode is always used.</summary>
+        /// <summary>Default level when no Levels match. When DefaultLevelFarDistance is 0, far-range switch is disabled and DefaultMode is always used (dist ignored).</summary>
         ChunkLodLevel DefaultLevel(int dist = -1)
         {
             ChunkLodMode mode = DefaultMode;
@@ -157,7 +161,10 @@ namespace TerraVoxel.Voxel.Lod
             return stepRank * (Mathf.Max(0, modeWeight) + 1);
         }
 
-        /// <summary>Editor-only: sort by MinDistance; warn on duplicates, Hysteresis, gaps, and overlaps. Non-destructive; use ContextMenu to manually remove overlapping levels.</summary>
+        /// <summary>Public helper for comparing LOD detail (lower = finer).</summary>
+        public int GetDetailRankFor(ChunkLodLevel level) => GetDetailRank(level);
+
+        /// <summary>Editor-only: sort by MinDistance; warn on duplicates, Hysteresis, gaps, overlaps, and weight order. Non-destructive; use ContextMenu to manually remove overlapping levels.</summary>
         void OnValidate()
         {
             if (Levels == null) return;
@@ -166,47 +173,41 @@ namespace TerraVoxel.Voxel.Lod
             var seen = new HashSet<long>();
             for (int i = 0; i < Levels.Count; i++)
             {
-                var a = Levels[i];
-                if (!a.IsValid) continue;
-                if (a.Hysteresis > ChunkLodLevel.MaxHysteresis)
-                    Debug.LogWarning($"[ChunkLodSettings] Hysteresis {a.Hysteresis} at index {i} exceeds MaxHysteresis ({ChunkLodLevel.MaxHysteresis}). Clamp to avoid unexpected behaviour.");
-                long key = (long)a.MinDistance << 32 | (uint)a.MaxDistance;
-                if (seen.Contains(key))
-                {
-                    Debug.LogWarning($"[ChunkLodSettings] Duplicate level range Min={a.MinDistance} Max={a.MaxDistance} at index {i}. Remove duplicate.");
-                    continue;
-                }
-                seen.Add(key);
-            }
-
-            for (int i = 0; i < Levels.Count - 1; i++)
-            {
                 var curr = Levels[i];
-                var next = Levels[i + 1];
-                if (!curr.IsValid || !next.IsValid) continue;
-                if (next.MinDistance > curr.MaxDistance + 1)
-                    Debug.LogWarning($"[ChunkLodSettings] Gap between levels {i} and {i + 1}: [{curr.MinDistance},{curr.MaxDistance}] vs [{next.MinDistance},{next.MaxDistance}]. Distances in gap will use DefaultLevel; may be config error.");
+                var prev = i > 0 ? Levels[i - 1] : default;
+                var next = i < Levels.Count - 1 ? Levels[i + 1] : default;
+
+                if (!curr.IsValid) continue;
+
+                // Hysteresis + duplicate
+                if (curr.Hysteresis > ChunkLodLevel.MaxHysteresis)
+                    Debug.LogWarning($"[ChunkLodSettings] Hysteresis {curr.Hysteresis} at index {i} exceeds MaxHysteresis ({ChunkLodLevel.MaxHysteresis}).");
+                long key = (long)curr.MinDistance << 32 | (uint)curr.MaxDistance;
+                if (seen.Contains(key))
+                    Debug.LogWarning($"[ChunkLodSettings] Duplicate level range Min={curr.MinDistance} Max={curr.MaxDistance} at index {i}.");
+                seen.Add(key);
+
+                // Gap (avoid overflow: MaxDistance + 1)
+                if (next.IsValid && curr.MaxDistance < int.MaxValue && next.MinDistance > curr.MaxDistance + 1)
+                    Debug.LogWarning($"[ChunkLodSettings] Gap between levels {i} and {i + 1}: [{curr.MinDistance},{curr.MaxDistance}] vs [{next.MinDistance},{next.MaxDistance}].");
+
+                // Overlap
+                if (prev.IsValid && curr.MinDistance <= prev.MaxDistance)
+                    Debug.LogWarning($"[ChunkLodSettings] Overlapping LOD levels at index {i}. Right-click asset → Remove Overlapping Levels.");
             }
 
+            // Far-range warning
             const int farRangeWarnThreshold = 100000;
             if (Levels.Count > 0)
             {
                 var last = Levels[Levels.Count - 1];
                 if (last.IsValid && last.MaxDistance < farRangeWarnThreshold)
-                    Debug.LogWarning($"[ChunkLodSettings] Last level MaxDistance={last.MaxDistance} < {farRangeWarnThreshold}. Far-range (beyond {last.MaxDistance}) uncovered; will use DefaultLevel. Consider extending last level or DefaultLevelFarDistance.");
+                    Debug.LogWarning($"[ChunkLodSettings] Last level MaxDistance={last.MaxDistance} < {farRangeWarnThreshold}. Far-range uncovered.");
             }
 
-            for (int i = 1; i < Levels.Count; i++)
-            {
-                var prev = Levels[i - 1];
-                var curr = Levels[i];
-                if (!prev.IsValid || !curr.IsValid) continue;
-                if (curr.MinDistance <= prev.MaxDistance)
-                {
-                    Debug.LogWarning($"[ChunkLodSettings] Overlapping LOD levels at index {i}. Right-click asset → Remove Overlapping Levels to fix.");
-                    break;
-                }
-            }
+            // Weight order: Mesh <= Billboard <= Svo <= None
+            if (modeMeshWeight > modeBillboardWeight || modeBillboardWeight > modeSvoWeight || modeSvoWeight > modeNoneWeight)
+                Debug.LogWarning($"[ChunkLodSettings] Mode weights should satisfy Mesh <= Billboard <= Svo <= None (current: {modeMeshWeight}, {modeBillboardWeight}, {modeSvoWeight}, {modeNoneWeight}).");
         }
 
         [ContextMenu("Extend Last Level to Far Range")]
