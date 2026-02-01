@@ -51,7 +51,7 @@ namespace TerraVoxel.Voxel.Systems
 
         void Awake()
         {
-            if (chunkManager == null) chunkManager = FindObjectOfType<ChunkManager>();
+            if (chunkManager == null) chunkManager = FindAnyObjectByType<ChunkManager>();
             if (analysisRoot == null && chunkManager != null) analysisRoot = chunkManager.PlayerTransform;
             if (analysisCamera == null && Camera.main != null) analysisCamera = Camera.main.transform;
             if (analysisRoot != null) _yaw = analysisRoot.eulerAngles.y;

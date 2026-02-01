@@ -26,6 +26,25 @@ namespace TerraVoxel.Voxel.Meshing
             if (Colors.IsCreated) Colors.Clear();
         }
 
+        /// <summary>Appends another MeshData; triangle indices are offset by current vertex count.</summary>
+        public void AppendFrom(MeshData other)
+        {
+            if (!other.Vertices.IsCreated || other.Vertices.Length == 0) return;
+            int vertOffset = Vertices.Length;
+            int n = other.Vertices.Length;
+            for (int i = 0; i < n; i++)
+            {
+                Vertices.Add(other.Vertices[i]);
+                if (Normals.IsCreated && other.Normals.IsCreated && i < other.Normals.Length)
+                    Normals.Add(other.Normals[i]);
+                if (Colors.IsCreated && other.Colors.IsCreated && i < other.Colors.Length)
+                    Colors.Add(other.Colors[i]);
+            }
+            if (other.Triangles.IsCreated)
+                for (int i = 0; i < other.Triangles.Length; i++)
+                    Triangles.Add(other.Triangles[i] + vertOffset);
+        }
+
         public void Dispose()
         {
             if (Vertices.IsCreated) Vertices.Dispose();

@@ -15,6 +15,11 @@ MonoBehaviour:
   DefaultLodStep: 1
   DefaultMode: 0
   DefaultHysteresis: 1
+  DefaultLevelFarDistance: 64
+  modeMeshWeight: 0
+  modeBillboardWeight: 8
+  modeSvoWeight: 16
+  modeNoneWeight: 32
   Levels:
   - MinDistance: 0
     MaxDistance: 2
@@ -32,7 +37,7 @@ MonoBehaviour:
     Hysteresis: 2
     Mode: 0
   - MinDistance: 11
-    MaxDistance: 20
+    MaxDistance: 999999
     LodStep: 8
     Hysteresis: 2
-    Mode: 0
+    Mode: 1

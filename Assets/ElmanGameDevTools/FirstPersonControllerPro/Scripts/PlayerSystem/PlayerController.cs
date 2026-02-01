@@ -83,7 +83,6 @@ namespace ElmanGameDevTools.PlayerSystem
 
         private bool _isGrounded;
         private bool _isCrouching;
-        private bool _hasJumped;
         private MovementState _currentMovementState = MovementState.Walking;
 
         public enum MovementState { Walking, Running, Crouching, Jumping }
@@ -137,7 +136,6 @@ namespace ElmanGameDevTools.PlayerSystem
 
             if (_isGrounded && _velocity.y < 0)
             {
-                _hasJumped = false;
                 _velocity.y = -5f;
             }
         }
@@ -174,7 +172,6 @@ namespace ElmanGameDevTools.PlayerSystem
             if (Input.GetButtonDown("Jump") && _isGrounded && !_isCrouching)
             {
                 _velocity.y = Mathf.Sqrt(jumpHeight * -2f * gravity);
-                _hasJumped = true;
                 _isGrounded = false;
             }
 

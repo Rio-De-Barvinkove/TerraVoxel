@@ -92,11 +92,11 @@ namespace TerraVoxel.Voxel.Lod
             return false;
         }
 
-        /// <summary>Target level from dist; then hysteresis: when moving to coarser, keep current if dist &lt;= current.MaxDistance + upHysteresis; when moving to finer, keep current if dist &gt;= current.MinDistance - downHysteresis (downHysteresis = hysteresis/2). Uses DefaultHysteresis when level.Hysteresis is 0.</summary>
+        /// <summary>Target level from dist; then hysteresis: when moving to coarser, keep current if dist &lt;= current.MaxDistance + upHysteresis; when moving to finer, keep current if dist &gt;= current.MinDistance - downHysteresis (downHysteresis = hysteresis/2). Uses DefaultHysteresis when level.Hysteresis is 0. When in a gap (no level matches) and dist &gt; current.MaxDistance, forces switch to Default to avoid stale level.</summary>
         public ChunkLodLevel ResolveLevel(int dist, int currentStep, ChunkLodMode currentMode)
         {
             ChunkLodLevel target = DefaultLevel(dist);
-            TryGetLevelForDistance(dist, out target);
+            bool matchedLevel = TryGetLevelForDistance(dist, out target);
 
             ChunkLodLevel current;
             if (!TryGetLevelForState(currentStep, currentMode, out current))
@@ -105,10 +105,14 @@ namespace TerraVoxel.Voxel.Lod
             if (current.LodStep == target.LodStep && current.Mode == target.Mode)
                 return target;
 
+            // Gap bug fix: when in uncovered range and we've left current level's range, switch to Default (rank compare may not trigger otherwise)
+            if (!matchedLevel && dist > current.MaxDistance && current.MaxDistance < int.MaxValue)
+                return target;
+
             int hysteresis = current.Hysteresis > 0 ? current.Hysteresis : DefaultHysteresis;
             hysteresis = Mathf.Min(hysteresis, ChunkLodLevel.MaxHysteresis);
             int upHysteresis = hysteresis;
-            // Asymmetry: downHysteresis = half — when moving to finer (closer) we transition faster so detail appears sooner; when moving to coarser (farther) we keep more hysteresis to avoid flicker at boundary. Int div (e.g. 1/2=0) makes small hysteresis effectively 0 for down.
+            // Asymmetry: downHysteresis = hysteresis/2 — upgrade to finer (closer) switches faster; downgrade to coarser keeps hysteresis to reduce boundary flicker. Int div (1/2=0) makes small hysteresis 0 for down.
             int downHysteresis = Mathf.Max(0, hysteresis / 2);
 
             int currentDetailRank = GetDetailRank(current);
@@ -184,14 +188,38 @@ namespace TerraVoxel.Voxel.Lod
                     Debug.LogWarning($"[ChunkLodSettings] Gap between levels {i} and {i + 1}: [{curr.MinDistance},{curr.MaxDistance}] vs [{next.MinDistance},{next.MaxDistance}]. Distances in gap will use DefaultLevel; may be config error.");
             }
 
+            const int farRangeWarnThreshold = 100000;
+            if (Levels.Count > 0)
+            {
+                var last = Levels[Levels.Count - 1];
+                if (last.IsValid && last.MaxDistance < farRangeWarnThreshold)
+                    Debug.LogWarning($"[ChunkLodSettings] Last level MaxDistance={last.MaxDistance} < {farRangeWarnThreshold}. Far-range (beyond {last.MaxDistance}) uncovered; will use DefaultLevel. Consider extending last level or DefaultLevelFarDistance.");
+            }
+
             for (int i = 1; i < Levels.Count; i++)
             {
                 var prev = Levels[i - 1];
                 var curr = Levels[i];
                 if (!prev.IsValid || !curr.IsValid) continue;
                 if (curr.MinDistance <= prev.MaxDistance)
-                    Debug.LogError($"[ChunkLodSettings] Overlapping LOD levels at index {i} ([{curr.MinDistance},{curr.MaxDistance}] vs [{prev.MinDistance},{prev.MaxDistance}]). Right-click asset → Remove Overlapping Levels to fix.");
+                {
+                    Debug.LogWarning($"[ChunkLodSettings] Overlapping LOD levels at index {i}. Right-click asset → Remove Overlapping Levels to fix.");
+                    break;
+                }
             }
+        }
+
+        [ContextMenu("Extend Last Level to Far Range")]
+        void ExtendLastLevelToFarRange()
+        {
+            if (Levels == null || Levels.Count == 0) return;
+            var last = Levels[Levels.Count - 1];
+            if (!last.IsValid) return;
+            last.MaxDistance = 999999;
+            Levels[Levels.Count - 1] = last;
+#if UNITY_EDITOR
+            UnityEditor.EditorUtility.SetDirty(this);
+#endif
         }
 
         [ContextMenu("Remove Overlapping Levels")]

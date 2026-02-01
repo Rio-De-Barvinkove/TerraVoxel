@@ -71,6 +71,8 @@ namespace TerraVoxel.Voxel.Streaming
         [Tooltip("Cooldown (sec) before downgrade; upgrades (approaching) bypass cooldown.")]
         [SerializeField] float lodTransitionCooldown = 0.2f;
         [SerializeField] int maxSvoBuildsPerFrame = 1;
+        [Tooltip("Log LOD transitions (Dist, CurrentStep, TargetStep) for debugging.")]
+        [SerializeField] bool enableLodTransitionLog = false;
         [Header("Occlusion")]
         [SerializeField] ChunkOcclusionCuller occlusionCuller;
         [Header("SVO")]
@@ -78,6 +80,11 @@ namespace TerraVoxel.Voxel.Streaming
         [Header("Streaming Budget")]
         [SerializeField] StreamingTimeBudget streamingBudget = new StreamingTimeBudget();
         [SerializeField] string chunkLayerName = "Terrain";
+        [Header("SRP Batching")]
+        [Tooltip("Shared material for all voxel chunks (VoxelTriplanarURP). Assign to ensure SRP Batcher compatibility.")]
+        [SerializeField] Material voxelMaterial;
+        [Tooltip("If set, configures voxelMaterial at startup. Ensures texture array and params applied before chunks spawn.")]
+        [SerializeField] VoxelMaterialLibrary voxelMaterialLibrary;
         [SerializeField] ChunkSaveManager saveManager;
         [SerializeField] ChunkModManager modManager;
         [SerializeField] ChunkHybridSaveManager hybridSave;
@@ -105,7 +112,6 @@ namespace TerraVoxel.Voxel.Streaming
         [SerializeField] int meshSlowMs = 12;
         [SerializeField] int integrationSlowMs = 4;
         [SerializeField] float adaptiveCooldown = 0.5f;
-        [SerializeField] int adaptiveDrawCallThreshold = 0;
         [SerializeField] long memoryPressureThresholdMb = 0;
         [Tooltip("Throttle streaming when graphics memory (MB) exceeds this. 0 = disabled.")]
         [SerializeField] long graphicsMemoryThresholdMb = 0;
@@ -114,6 +120,13 @@ namespace TerraVoxel.Voxel.Streaming
         [Header("Integration / Remesh Guards")]
         [SerializeField] int maxRebuildNeighborsDepth = 2;
         [SerializeField] int maxRequestRemeshNeighborsDepth = 1;
+        [Tooltip("When true, only rebuild the 1 face touching a new chunk instead of full remesh of 6 neighbors.")]
+        [SerializeField] bool enableEdgeOnlyRemesh = true;
+        [Header("Seam Fix (Skirts)")]
+        [Tooltip("Expand boundary quads slightly into neighbor space to hide T-junctions and seams.")]
+        [SerializeField] bool enableSeamSkirts = true;
+        [Tooltip("Vertex offset for skirts (voxel units). ~0.001-0.01 typical.")]
+        [SerializeField] [Range(0.0001f, 0.1f)] float seamSkirtOffset = 0.002f;
 
         readonly Dictionary<ChunkCoord, Chunk> _active = new Dictionary<ChunkCoord, Chunk>();
         readonly Dictionary<ChunkCoord, CachedChunkData> _dataCache = new Dictionary<ChunkCoord, CachedChunkData>();
@@ -122,12 +135,12 @@ namespace TerraVoxel.Voxel.Streaming
         readonly HashSet<ChunkCoord> _pendingSet = new HashSet<ChunkCoord>();
         readonly Queue<ChunkCoord> _preload = new Queue<ChunkCoord>();
         readonly Queue<ChunkCoord> _removeQueue = new Queue<ChunkCoord>();
-        readonly Queue<ChunkCoord> _remeshQueue = new Queue<ChunkCoord>();
         readonly HashSet<ChunkCoord> _preloadSet = new HashSet<ChunkCoord>();
         readonly HashSet<ChunkCoord> _preloaded = new HashSet<ChunkCoord>();
         readonly Queue<ChunkCoord> _farRangeRenderQueue = new Queue<ChunkCoord>();
         readonly HashSet<ChunkCoord> _farRangeRenderSet = new HashSet<ChunkCoord>();
         readonly HashSet<ChunkCoord> _removeSet = new HashSet<ChunkCoord>();
+        /// <summary>Remesh queue; ProcessRemeshQueue picks closest by distance (min-heap semantics).</summary>
         readonly HashSet<ChunkCoord> _remeshSet = new HashSet<ChunkCoord>();
         readonly Dictionary<ChunkCoord, GenTask> _genJobs = new Dictionary<ChunkCoord, GenTask>();
         readonly Dictionary<ChunkCoord, MeshTask> _meshJobs = new Dictionary<ChunkCoord, MeshTask>();
@@ -143,6 +156,10 @@ namespace TerraVoxel.Voxel.Streaming
         /// <summary>Empty materials buffer for jobs; Allocator.Persistent, must be disposed in OnDestroy.</summary>
         NativeArray<ushort> _emptyMaterials;
         readonly HashSet<ChunkCoord> _remeshAfterIntegration = new HashSet<ChunkCoord>();
+        readonly Dictionary<ChunkCoord, int> _neighborDirtyFaces = new Dictionary<ChunkCoord, int>();
+        readonly Dictionary<ChunkCoord, MeshData[]> _chunkFaceCache = new Dictionary<ChunkCoord, MeshData[]>();
+        readonly Queue<ChunkCoord> _faceRemeshQueue = new Queue<ChunkCoord>();
+        readonly HashSet<ChunkCoord> _faceRemeshSet = new HashSet<ChunkCoord>();
         readonly List<RemoveCandidate> _removeCandidates = new List<RemoveCandidate>(256);
         int _integrationsLastFrame;
         ChunkPool _pool;
@@ -301,7 +318,7 @@ namespace TerraVoxel.Voxel.Streaming
         }
 
         public int ActiveCount => _active.Count;
-        public int PendingCount => (viewCone != null && viewCone.Enabled) ? viewCone.Count : _pending.Count;
+        public int PendingCount => (viewCone != null && viewCone.Enabled) ? viewCone.Count : _pendingSet.Count;
         public int SpawnedLastFrame => _spawnedLastFrame;
         public int IntegrationQueueCount => _integrationQueue.Count;
         public int IntegrationsLastFrame => _integrationsLastFrame;
@@ -309,7 +326,7 @@ namespace TerraVoxel.Voxel.Streaming
         public int MeshJobsCount => _meshJobs.Count;
         public int PreloadQueueCount => _preload.Count;
         public int PreloadedCount => _preloaded.Count;
-        public int RemeshQueueCount => _remeshQueue.Count;
+        public int RemeshQueueCount => _remeshSet.Count;
         public int RemoveQueueCount => _removeQueue.Count;
         public int LoadRadius => loadRadius;
         public int MaxSpawnsPerFrame => maxSpawnsPerFrame;
@@ -331,6 +348,11 @@ namespace TerraVoxel.Voxel.Streaming
         int CurrentMaxMeshJobsInFlight => enableAdaptiveLimits ? _runtimeMaxMeshJobsInFlight : maxMeshJobsInFlight;
         int CurrentMaxIntegrationsPerFrame => enableAdaptiveLimits ? _runtimeMaxIntegrationsPerFrame : maxIntegrationsPerFrame;
         int CurrentMaxPreloadsPerFrame => enableAdaptiveLimits ? _runtimeMaxPreloadsPerFrame : maxPreloadsPerFrame;
+
+        bool IsInIntegrationSet(ChunkCoord coord)
+        {
+            lock (_integrationLock) return _integrationSet.Contains(coord);
+        }
 
         public void SetPlayer(Transform newPlayer)
         {
@@ -423,6 +445,16 @@ namespace TerraVoxel.Voxel.Streaming
             if (!_emptyMaterials.IsCreated)
                 _emptyMaterials = new NativeArray<ushort>(0, Allocator.Persistent);
             InitAdaptiveLimits();
+            ConfigureVoxelMaterial();
+        }
+
+        void ConfigureVoxelMaterial()
+        {
+            if (voxelMaterial == null || voxelMaterialLibrary == null) return;
+            voxelMaterial.SetTexture("_MainTexArr", voxelMaterialLibrary.TextureArray);
+            voxelMaterial.SetFloat("_TriplanarScale", voxelMaterialLibrary.TriplanarScale);
+            voxelMaterial.SetFloat("_NormalStrength", voxelMaterialLibrary.NormalStrength);
+            voxelMaterial.SetInt("_LayerIndex", voxelMaterialLibrary.DefaultLayerIndex);
         }
 
         void InitAdaptiveLimits()
@@ -480,6 +512,8 @@ namespace TerraVoxel.Voxel.Streaming
             ProcessIntegrationQueue();
             if (streamingPaused)
             {
+                if (enableEdgeOnlyRemesh)
+                    ProcessFaceRemeshQueue();
                 ProcessRemeshQueue();
                 return;
             }
@@ -487,6 +521,8 @@ namespace TerraVoxel.Voxel.Streaming
             ProcessPending();
             ProcessPreload();
             ProcessRemovalQueue();
+            if (enableEdgeOnlyRemesh)
+                ProcessFaceRemeshQueue();
             ProcessRemeshQueue();
             if (enableFullLod)
                 ProcessFullLod();
@@ -679,11 +715,7 @@ namespace TerraVoxel.Voxel.Streaming
             _pending.Clear();
             _pendingSet.Clear();
             for (int i = 0; i < pendingKeep.Count; i++)
-            {
-                var c = pendingKeep[i];
-                _pendingSet.Add(c);
-                _pending.Enqueue(c);
-            }
+                _pendingSet.Add(pendingKeep[i]);
 
             var preloadKeep = new List<ChunkCoord>();
             foreach (var coord in _preloadSet)
@@ -702,7 +734,7 @@ namespace TerraVoxel.Voxel.Streaming
             _removeQueue.Clear();
             _removeSet.Clear();
             _integrationQueue.Clear();
-            _integrationSet.Clear();
+            lock (_integrationLock) { _integrationSet.Clear(); }
 
             var remeshKeep = new List<ChunkCoord>();
             foreach (var coord in _remeshSet)
@@ -710,12 +742,32 @@ namespace TerraVoxel.Voxel.Streaming
                 if (_active.ContainsKey(coord) && IsWithinKeepRadius(coord, center, keepRadius))
                     remeshKeep.Add(coord);
             }
-            _remeshQueue.Clear();
             _remeshSet.Clear();
             for (int i = 0; i < remeshKeep.Count; i++)
-            {
                 _remeshSet.Add(remeshKeep[i]);
-                _remeshQueue.Enqueue(remeshKeep[i]);
+
+            var faceRemeshKeep = new List<(ChunkCoord coord, int mask)>();
+            foreach (var coord in _faceRemeshSet)
+            {
+                if (_active.ContainsKey(coord) && IsWithinKeepRadius(coord, center, keepRadius))
+                {
+                    int mask = _neighborDirtyFaces.TryGetValue(coord, out int m) ? m : 0;
+                    faceRemeshKeep.Add((coord, mask));
+                }
+                else
+                {
+                    ReleaseFaceCacheForChunk(coord);
+                }
+            }
+            _faceRemeshQueue.Clear();
+            _faceRemeshSet.Clear();
+            _neighborDirtyFaces.Clear();
+            for (int i = 0; i < faceRemeshKeep.Count; i++)
+            {
+                var (c, mask) = faceRemeshKeep[i];
+                _neighborDirtyFaces[c] = mask;
+                _faceRemeshSet.Add(c);
+                _faceRemeshQueue.Enqueue(c);
             }
 
             var stale = new List<ChunkCoord>();
@@ -841,6 +893,19 @@ namespace TerraVoxel.Voxel.Streaming
             _pendingCachedMeshes.Clear();
             _remeshAfterIntegration.Clear();
 
+            foreach (var kvp in _chunkFaceCache)
+            {
+                if (kvp.Value != null)
+                {
+                    for (int i = 0; i < kvp.Value.Length; i++)
+                    {
+                        if (kvp.Value[i].Vertices.IsCreated)
+                            kvp.Value[i].Dispose();
+                    }
+                }
+            }
+            _chunkFaceCache.Clear();
+
             if (_emptyMaterials.IsCreated)
                 _emptyMaterials.Dispose();
 
@@ -895,12 +960,11 @@ namespace TerraVoxel.Voxel.Streaming
                         }
                         if (_pendingSet.Contains(coord)) continue;
                         if (pendingQueueCap > 0 && PendingCount >= pendingQueueCap)
-                            DropOnePendingOldest();
+                            DropOnePendingOldest(center);
                         if (viewCone != null && viewCone.Enabled)
                             viewCone.EnqueueWithPriority(coord, center, player);
                         else
-                            _pending.Enqueue(coord);
-                        _pendingSet.Add(coord);
+                            _pendingSet.Add(coord);
                     }
                 }
             }
@@ -1024,8 +1088,7 @@ namespace TerraVoxel.Voxel.Streaming
                         if (viewCone != null && viewCone.Enabled)
                             viewCone.EnqueueWithPriority(coord, center, player);
                         else
-                            _pending.Enqueue(coord);
-                        _pendingSet.Add(coord);
+                            _pendingSet.Add(coord);
                     }
                     continue;
                 }
@@ -1312,6 +1375,8 @@ namespace TerraVoxel.Voxel.Streaming
                     chunk.ApplySharedMesh(cachedMesh.Mesh, cachedApplyCollider);
                     _lastIntegrationMs = (long)((Time.realtimeSinceStartupAsDouble - cachedIntegrationStart) * 1000.0);
 
+                    if (enableEdgeOnlyRemesh)
+                        ReleaseFaceCacheForChunk(coord);
                     RegisterMeshCacheForChunk(coord, cachedMesh.Hash, cachedMesh.Mesh, markShared: false, addCollider: cachedApplyCollider);
                     _pendingCachedMeshes.Remove(coord);
                     chunk.IsLowLod = false;
@@ -1363,6 +1428,8 @@ namespace TerraVoxel.Voxel.Streaming
                 bool applyCollider = addColliders && !_preloaded.Contains(coord);
                 double integrationStart = Time.realtimeSinceStartupAsDouble;
                 chunk.ApplyMesh(meshJob.MeshData, applyCollider);
+                if (enableEdgeOnlyRemesh)
+                    ReleaseFaceCacheForChunk(coord);
                 _lastIntegrationMs = (long)((Time.realtimeSinceStartupAsDouble - integrationStart) * 1000.0);
 
                 if (enableMeshCache && meshJob.LodStep <= 1 && meshJob.MaterialsHash != 0)
@@ -1509,14 +1576,13 @@ namespace TerraVoxel.Voxel.Streaming
                         if (viewCone != null && viewCone.Enabled)
                             viewCone.EnqueueWithPriority(coord, center, player);
                         else
-                            _pending.Enqueue(coord);
-                        _pendingSet.Add(coord);
+                            _pendingSet.Add(coord);
                     }
                 }
             }
         }
 
-        void DropOnePendingOldest()
+        void DropOnePendingOldest(ChunkCoord center)
         {
             if (PendingCount == 0) return;
             ChunkCoord dropped;
@@ -1526,7 +1592,7 @@ namespace TerraVoxel.Voxel.Streaming
             }
             else
             {
-                dropped = _pending.Dequeue();
+                if (!TryFindFarthestPending(center, out dropped)) return;
             }
             _pendingSet.Remove(dropped);
         }
@@ -1545,8 +1611,51 @@ namespace TerraVoxel.Voxel.Streaming
                 _pendingSet.Remove(coord);
                 return true;
             }
-            coord = _pending.Dequeue();
+            if (!TryFindClosestPending(center, out coord))
+                return false;
             _pendingSet.Remove(coord);
+            return true;
+        }
+
+        bool TryFindClosestPending(ChunkCoord center, out ChunkCoord coord)
+        {
+            coord = default;
+            if (_pendingSet.Count == 0) return false;
+            ChunkCoord best = default;
+            int bestDistSq = int.MaxValue;
+            foreach (var c in _pendingSet)
+            {
+                int dx = c.X - center.X;
+                int dz = c.Z - center.Z;
+                int d = dx * dx + dz * dz; // 2D distance (XZ)
+                if (d < bestDistSq)
+                {
+                    bestDistSq = d;
+                    best = c;
+                }
+            }
+            coord = best;
+            return true;
+        }
+
+        bool TryFindFarthestPending(ChunkCoord center, out ChunkCoord coord)
+        {
+            coord = default;
+            if (_pendingSet.Count == 0) return false;
+            ChunkCoord best = default;
+            int bestDistSq = -1;
+            foreach (var c in _pendingSet)
+            {
+                int dx = c.X - center.X;
+                int dz = c.Z - center.Z;
+                int d = dx * dx + dz * dz; // 2D distance (XZ)
+                if (d > bestDistSq)
+                {
+                    bestDistSq = d;
+                    best = c;
+                }
+            }
+            coord = best;
             return true;
         }
 
@@ -1643,7 +1752,7 @@ namespace TerraVoxel.Voxel.Streaming
             if (!chunk.Data.IsCreated) return false;
             if (IsChunkGenerating(coord)) return false;
             if (_meshJobs.ContainsKey(coord)) return false;
-            if (_integrationSet.Contains(coord) || _pendingCachedMeshes.ContainsKey(coord))
+            if (IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord))
             {
                 _remeshAfterIntegration.Add(coord);
                 return false;
@@ -1755,7 +1864,7 @@ namespace TerraVoxel.Voxel.Streaming
             var empty = _emptyMaterials;
 
             GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
-            var handle = GreedyMesher.Schedule(dataCopy, neighbors.Data, maxMaterialIndex, fallbackMaterialIndex, mask, empty, ref meshData, voxelScale);
+            var handle = GreedyMesher.Schedule(dataCopy, neighbors.Data, maxMaterialIndex, fallbackMaterialIndex, mask, empty, ref meshData, voxelScale, 0, enableSeamSkirts, seamSkirtOffset);
 
             var meshJob = new ChunkMeshJobHandle
             {
@@ -1972,27 +2081,138 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
-        void ProcessRemeshQueue()
+        void ProcessFaceRemeshQueue()
         {
             int count = 0;
-            int guard = _remeshQueue.Count;
-            while (_remeshQueue.Count > 0 && count < maxRemeshPerFrame && guard-- > 0)
+            int guard = _faceRemeshQueue.Count;
+            while (_faceRemeshQueue.Count > 0 && count < maxRemeshPerFrame && guard-- > 0)
             {
                 if (BudgetExceeded()) break;
                 if (_meshJobs.Count >= CurrentMaxMeshJobsInFlight) break;
 
-                var coord = _remeshQueue.Dequeue();
-                _remeshSet.Remove(coord);
+                var coord = _faceRemeshQueue.Dequeue();
+                _faceRemeshSet.Remove(coord);
+                if (!_neighborDirtyFaces.TryGetValue(coord, out int faceMask))
+                {
+                    _neighborDirtyFaces.Remove(coord);
+                    continue;
+                }
+                _neighborDirtyFaces.Remove(coord);
+
+                if (!_active.TryGetValue(coord, out var chunk)) continue;
+                if (_remeshSet.Contains(coord)) continue; // Full remesh queued, skip face-only
+                if (_meshJobs.ContainsKey(coord)) continue;
+                if (IsChunkGenerating(coord))
+                {
+                    _neighborDirtyFaces[coord] = faceMask;
+                    if (_faceRemeshSet.Add(coord))
+                        _faceRemeshQueue.Enqueue(coord);
+                    continue;
+                }
+                if (IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord))
+                {
+                    _remeshAfterIntegration.Add(coord);
+                    continue;
+                }
+                if (chunk.UsesSvo || chunk.LodStep > 1)
+                {
+                    QueueRemesh(coord);
+                    continue;
+                }
+
+                if (ScheduleFaceRemeshForChunk(coord, chunk, faceMask))
+                    count++;
+                else
+                {
+                    _neighborDirtyFaces[coord] = faceMask;
+                    if (_faceRemeshSet.Add(coord))
+                        _faceRemeshQueue.Enqueue(coord);
+                }
+            }
+        }
+
+        bool ScheduleFaceRemeshForChunk(ChunkCoord coord, Chunk chunk, int faceMask)
+        {
+            if (!chunk.Data.IsCreated) return false;
+            var neighbors = GatherNeighborCopies(coord);
+            if (!HasAllNeighbors(neighbors.Data))
+            {
+                neighbors.Dispose();
+                QueueRemesh(coord);
+                return true;
+            }
+
+            GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
+            int chunkSize = chunk.Data.Size;
+            float voxelScale = VoxelConstants.VoxelSize;
+
+            bool hasCache = _chunkFaceCache.TryGetValue(coord, out var faceCache) && faceCache != null;
+            bool canPartial = hasCache && faceMask != 0 && faceMask != GreedyMesher.FaceMaskAll;
+
+            MeshData merged;
+            if (canPartial)
+            {
+                for (int i = 0; i < 6; i++)
+                {
+                    if ((faceMask & (1 << i)) == 0) continue;
+                    var fd = new MeshData(Allocator.Persistent);
+                    GreedyMesher.Build(chunk.Data, neighbors.Data, maxMaterialIndex, fallbackMaterialIndex, ref fd, voxelScale, 1 << i, enableSeamSkirts, seamSkirtOffset);
+                    if (faceCache[i].Vertices.IsCreated) faceCache[i].Dispose();
+                    faceCache[i] = fd;
+                }
+                merged = new MeshData(Allocator.Temp);
+                for (int i = 0; i < 6; i++)
+                {
+                    if (faceCache[i].Vertices.IsCreated && faceCache[i].Vertices.Length > 0)
+                        merged.AppendFrom(faceCache[i]);
+                }
+            }
+            else
+            {
+                merged = new MeshData(Allocator.Temp);
+                if (faceCache == null) faceCache = new MeshData[6];
+                if (!_emptyMaterials.IsCreated)
+                    _emptyMaterials = new NativeArray<ushort>(0, Allocator.Persistent);
+                for (int f = 0; f < 6; f++)
+                {
+                    var fd = new MeshData(Allocator.Persistent);
+                    GreedyMesher.Build(chunk.Data, neighbors.Data, maxMaterialIndex, fallbackMaterialIndex, ref fd, voxelScale, 1 << f, enableSeamSkirts, seamSkirtOffset);
+                    merged.AppendFrom(fd);
+                    if (faceCache[f].Vertices.IsCreated) faceCache[f].Dispose();
+                    faceCache[f] = fd;
+                }
+                _chunkFaceCache[coord] = faceCache;
+            }
+
+            neighbors.Dispose();
+            chunk.ApplyMesh(merged, addCollider: false);
+            merged.Dispose();
+            return true;
+        }
+
+        void ProcessRemeshQueue()
+        {
+            if (_remeshSet.Count == 0) return;
+            if (player == null || worldGen == null) return;
+            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
+
+            int count = 0;
+            int guard = _remeshSet.Count;
+            while (_remeshSet.Count > 0 && count < maxRemeshPerFrame && guard-- > 0)
+            {
+                if (BudgetExceeded()) break;
+                if (_meshJobs.Count >= CurrentMaxMeshJobsInFlight) break;
+                if (!TryDequeueClosestRemesh(center, out var coord))
+                    break;
 
                 if (!_active.ContainsKey(coord)) continue;
                 if (_meshJobs.ContainsKey(coord)) continue;
                 if (IsChunkGenerating(coord))
                 {
-                    if (_remeshSet.Add(coord))
-                        _remeshQueue.Enqueue(coord);
+                    _remeshSet.Add(coord);
                     continue;
                 }
-                if (_integrationSet.Contains(coord) || _pendingCachedMeshes.ContainsKey(coord))
+                if (IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord))
                 {
                     // Already integrating, defer remesh until after integration
                     _remeshAfterIntegration.Add(coord);
@@ -2005,10 +2225,7 @@ namespace TerraVoxel.Voxel.Streaming
                     count++;
                 }
                 else
-                {
                     _remeshSet.Add(coord);
-                    _remeshQueue.Enqueue(coord);
-                }
             }
         }
 
@@ -2041,7 +2258,10 @@ namespace TerraVoxel.Voxel.Streaming
                 if (desired.Mode == currentMode && desired.LodStep == currentStep) continue;
                 bool isUpgrade = desired.LodStep < currentStep;
                 if (!isUpgrade && lodTransitionCooldown > 0f && now - chunk.LodStartTime < lodTransitionCooldown) continue;
-                if (IsChunkBusy(coord) || _integrationSet.Contains(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
+                if (IsChunkBusy(coord) || IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
+
+                if (enableLodTransitionLog)
+                    Debug.Log($"[ChunkManager] LOD transition: Dist={dist}, Current Step={currentStep} Mode={currentMode}, Target Step={desired.LodStep} Mode={desired.Mode}");
 
                 if (desired.Mode == ChunkLodMode.Svo)
                 {
@@ -2117,7 +2337,7 @@ namespace TerraVoxel.Voxel.Streaming
                 if (chunk.IsLowLod && reverseLodUpgradeSeconds > 0f && (Time.realtimeSinceStartupAsDouble - chunk.LodStartTime) < reverseLodUpgradeSeconds) continue;
                 if (!IsWithinLoadRadius(coord, center, loadRadius)) continue;
                 if (IsChunkBusy(coord)) continue;
-                if (_integrationSet.Contains(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
+                if (IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
 
                 chunk.IsLowLod = false;
                 chunk.LodStartTime = 0;
@@ -2134,6 +2354,8 @@ namespace TerraVoxel.Voxel.Streaming
 
             var chunk = _pool.Get();
             chunk.Initialize(coord);
+            if (voxelMaterial != null)
+                chunk.SetSharedMaterial(voxelMaterial);
             ApplyChunkLayer(chunk);
             if (preload)
             {
@@ -2390,15 +2612,19 @@ namespace TerraVoxel.Voxel.Streaming
 
             if (chunk.Data.IsCreated) chunk.Data.Dispose();
             ReleaseMeshCacheForChunk(coord);
+            ReleaseFaceCacheForChunk(coord);
+            _neighborDirtyFaces.Remove(coord);
+            _faceRemeshSet.Remove(coord);
             if (svoManager != null)
                 svoManager.ReleaseForChunk(coord);
             if (_pendingCachedMeshes.ContainsKey(coord))
                 _pendingCachedMeshes.Remove(coord);
 
             // Очистити pending mesh job якщо чанк в черзі інтеграції
-            if (_integrationSet.Contains(coord))
+            lock (_integrationLock)
             {
-                _integrationSet.Remove(coord);
+                if (_integrationSet.Contains(coord))
+                    _integrationSet.Remove(coord);
             }
             if (_pendingMeshJobs.TryGetValue(coord, out var meshJob))
             {
@@ -2541,34 +2767,27 @@ namespace TerraVoxel.Voxel.Streaming
 
         bool TryQueueCachedMesh(ChunkCoord coord, ulong hash, Mesh mesh)
         {
-            if (!_integrationSet.Contains(coord))
+            // Validate mesh before queuing - must have vertices
+            if (mesh == null || mesh.vertexCount == 0)
+                return false;
+            // Validate that chunk still exists and has data
+            if (!_active.TryGetValue(coord, out var chunk) || !chunk.Data.IsCreated)
+                return false;
+
+            lock (_integrationLock)
             {
-                // Validate mesh before queuing - must have vertices
-                if (mesh == null || mesh.vertexCount == 0)
-                {
+                if (_integrationSet.Contains(coord))
                     return false;
-                }
-                
-                // Validate that chunk still exists and has data
-                if (!_active.TryGetValue(coord, out var chunk) || !chunk.Data.IsCreated)
-                {
-                    return false;
-                }
-                
                 _pendingCachedMeshes[coord] = new PendingCachedMesh
                 {
                     Mesh = mesh,
                     Hash = hash,
                     Epoch = _streamingEpoch
                 };
-                lock (_integrationLock)
-                {
-                    _integrationQueue.Enqueue(coord);
-                    _integrationSet.Add(coord);
-                }
-                return true;
+                _integrationQueue.Enqueue(coord);
+                _integrationSet.Add(coord);
             }
-            return false;
+            return true;
         }
 
         void RegisterMeshCacheForChunk(ChunkCoord coord, ulong hash, Mesh mesh, bool markShared, bool addCollider)
@@ -2767,29 +2986,29 @@ namespace TerraVoxel.Voxel.Streaming
 
         void RebuildNeighborsInner(ChunkCoord coord)
         {
-            var neighbors = new[]
+            int columnChunks = worldGen != null ? worldGen.ColumnChunks : 4;
+            var neighbors = new (ChunkCoord coord, int faceIndex)[]
             {
-                new ChunkCoord(coord.X + 1, coord.Y, coord.Z),
-                new ChunkCoord(coord.X - 1, coord.Y, coord.Z),
-                new ChunkCoord(coord.X, coord.Y + 1, coord.Z),
-                new ChunkCoord(coord.X, coord.Y - 1, coord.Z),
-                new ChunkCoord(coord.X, coord.Y, coord.Z + 1),
-                new ChunkCoord(coord.X, coord.Y, coord.Z - 1)
+                (new ChunkCoord(coord.X + 1, coord.Y, coord.Z), 0),  // neighbor at +X: its NegX face touches us
+                (new ChunkCoord(coord.X - 1, coord.Y, coord.Z), 1),  // neighbor at -X: its PosX face touches us
+                (new ChunkCoord(coord.X, coord.Y + 1, coord.Z), 2),  // neighbor at +Y: its NegY face touches us
+                (new ChunkCoord(coord.X, coord.Y - 1, coord.Z), 3),  // neighbor at -Y: its PosY face touches us
+                (new ChunkCoord(coord.X, coord.Y, coord.Z + 1), 4),  // neighbor at +Z: its NegZ face touches us
+                (new ChunkCoord(coord.X, coord.Y, coord.Z - 1), 5)   // neighbor at -Z: its PosZ face touches us
             };
 
-            foreach (var neighbor in neighbors)
+            foreach (var (neighbor, faceIndex) in neighbors)
             {
+                if (neighbor.Y < 0 || neighbor.Y >= columnChunks) continue;
                 if (!_active.ContainsKey(neighbor)) continue;
                 if (IsChunkGenerating(neighbor)) continue;
                 if (_meshJobs.ContainsKey(neighbor)) continue;
-                if (_integrationSet.Contains(neighbor)) continue; // Don't remesh if already integrating
-                if (_remeshSet.Contains(neighbor)) continue; // Don't add duplicate remesh requests
-                
-                // Invalidate mesh cache for neighbor since its neighbor (this chunk) changed
+                if (IsInIntegrationSet(neighbor)) continue;
+                if (_remeshSet.Contains(neighbor)) continue;
+
                 if (enableMeshCache)
                 {
                     ReleaseMeshCacheForChunk(neighbor);
-                    // Also remove from pending cached meshes if present
                     if (_pendingCachedMeshes.ContainsKey(neighbor))
                     {
                         _pendingCachedMeshes.Remove(neighbor);
@@ -2800,17 +3019,83 @@ namespace TerraVoxel.Voxel.Streaming
                         }
                     }
                 }
-                
-                QueueRemesh(neighbor);
+
+                if (enableEdgeOnlyRemesh)
+                    InvalidateNeighborFace(neighbor, faceIndex);
+                else
+                    QueueRemesh(neighbor);
+            }
+        }
+
+        void InvalidateNeighborFace(ChunkCoord neighbor, int faceIndex)
+        {
+            if (_meshJobs.ContainsKey(neighbor)) return;
+            if (_faceRemeshSet.Contains(neighbor))
+            {
+                _neighborDirtyFaces.TryGetValue(neighbor, out int existing);
+                _neighborDirtyFaces[neighbor] = existing | (1 << faceIndex);
+                return;
+            }
+            _neighborDirtyFaces[neighbor] = 1 << faceIndex;
+            _faceRemeshSet.Add(neighbor);
+            _faceRemeshQueue.Enqueue(neighbor);
+        }
+
+        void ReleaseFaceCacheForChunk(ChunkCoord coord)
+        {
+            if (!_chunkFaceCache.TryGetValue(coord, out var arr)) return;
+            _chunkFaceCache.Remove(coord);
+            if (arr != null)
+            {
+                for (int i = 0; i < arr.Length; i++)
+                {
+                    if (arr[i].Vertices.IsCreated)
+                        arr[i].Dispose();
+                }
             }
         }
 
         void QueueRemesh(ChunkCoord coord)
         {
             if (!_active.ContainsKey(coord)) return;
+            if (_meshJobs.ContainsKey(coord)) return; // One remesh per chunk: skip if mesh job already in flight
+            if (_remeshSet.Contains(coord)) return;   // Already queued, avoid duplicate
+            if (IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord))
+            {
+                _remeshAfterIntegration.Add(coord);   // Defer until integration done
+                return;
+            }
+
+            // Invariant: skip remesh if voxel data (and neighbors) unchanged
+            if (_active.TryGetValue(coord, out var chunk) && chunk.Data.IsCreated && !chunk.UsesSvo)
+            {
+                int lodStep = Mathf.Max(1, chunk.LodStep);
+                if (lodStep == 1 && _chunkMeshHashes.TryGetValue(coord, out ulong storedHash))
+                {
+                    var neighbors = GatherNeighborCopies(coord);
+                    if (HasAllNeighbors(neighbors.Data))
+                    {
+                        ulong currentHash = ComputeMeshCacheHash(chunk.Data.Materials, chunk.Data.Size, neighbors, 1, chunk.Data.Density);
+                        neighbors.Dispose();
+                        if (currentHash == storedHash)
+                            return;
+                    }
+                    else
+                    {
+                        neighbors.Dispose();
+                    }
+                }
+            }
+
+            if (enableEdgeOnlyRemesh)
+            {
+                ReleaseFaceCacheForChunk(coord);
+                _neighborDirtyFaces.Remove(coord);
+                _faceRemeshSet.Remove(coord);
+            }
             if (svoManager != null)
                 svoManager.ReleaseForChunk(coord);
-            if (enableMeshCache && _active.TryGetValue(coord, out var chunk) && (chunk.UsesSvo || chunk.LodStep > 1))
+            if (enableMeshCache)
             {
                 ReleaseMeshCacheForChunk(coord);
                 var n = new[] {
@@ -2821,8 +3106,31 @@ namespace TerraVoxel.Voxel.Streaming
                 for (int i = 0; i < 6; i++)
                     ReleaseMeshCacheForChunk(n[i]);
             }
-            if (_remeshSet.Add(coord))
-                _remeshQueue.Enqueue(coord);
+            _remeshSet.Add(coord);
+        }
+
+        /// <summary>Extract coord with minimum distance to center from _remeshSet (min-heap semantics).</summary>
+        bool TryDequeueClosestRemesh(ChunkCoord center, out ChunkCoord coord)
+        {
+            coord = default;
+            if (_remeshSet.Count == 0) return false;
+
+            ChunkCoord best = default;
+            int bestDistSq = int.MaxValue;
+            foreach (var c in _remeshSet)
+            {
+                int dx = c.X - center.X;
+                int dz = c.Z - center.Z;
+                int d = dx * dx + dz * dz; // 2D distance (XZ), same as IsWithinLoadRadius
+                if (d < bestDistSq)
+                {
+                    bestDistSq = d;
+                    best = c;
+                }
+            }
+            _remeshSet.Remove(best);
+            coord = best;
+            return true;
         }
     }
 }

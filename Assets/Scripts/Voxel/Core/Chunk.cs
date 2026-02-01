@@ -126,6 +126,14 @@ namespace TerraVoxel.Voxel.Core
             if (_renderer != null) _renderer.enabled = enabled;
         }
 
+        /// <summary>Assign shared material for SRP Batching. Use sharedMaterial (not material) to avoid per-renderer instances.</summary>
+        public void SetSharedMaterial(Material sharedMaterial)
+        {
+            if (sharedMaterial == null) return;
+            if (_renderer == null) _renderer = gameObject.GetComponent<MeshRenderer>();
+            if (_renderer != null) _renderer.sharedMaterial = sharedMaterial;
+        }
+
         public void ApplySharedMesh(Mesh sharedMesh, bool addCollider = false)
         {
             if (sharedMesh == null) return;

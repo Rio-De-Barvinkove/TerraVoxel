@@ -13,6 +13,8 @@ namespace TerraVoxel.Voxel.Streaming
     public class ChunkViewConePrioritizer : MonoBehaviour
     {
         [SerializeField] bool enable = true;
+        [Tooltip("When true: strict priority = distance only (closer = higher). Ignores view cone and visual bonuses.")]
+        [SerializeField] bool distanceOnly = false;
         [SerializeField] Transform viewTransform;
         [SerializeField] bool useMainCamera = true;
         [SerializeField] bool ignoreVertical = true;
@@ -47,7 +49,7 @@ namespace TerraVoxel.Voxel.Streaming
         public bool Enabled => enable;
         public int Count => _heap.Count;
 
-        /// <summary>Score for a chunk (distance, view cone, surface band). Called once per enqueue; weights not normalized. worldGen/BaseHeight guarded; on exception visual bonus is skipped and a warning is logged once.</summary>
+        /// <summary>Score for a chunk (distance, view cone, surface band). Called once per enqueue; weights not normalized. When distanceOnly: score = 1/(1+dist), strict priority = distance (closer = higher).</summary>
         public float ComputeScore(ChunkCoord c, ChunkCoord center, Vector3 forward, bool includeVerticalDistance)
         {
             int dx = c.X - center.X;
@@ -55,6 +57,8 @@ namespace TerraVoxel.Voxel.Streaming
             int dz = c.Z - center.Z;
             int distSq = dx * dx + dz * dz + (includeVerticalDistance ? dy * dy : 0);
             float dist = Mathf.Sqrt(distSq);
+            if (distanceOnly)
+                return 1f / (1f + dist);
 
             Vector3 to = new Vector3(dx, includeVerticalDistance ? dy : 0, dz);
             if (ignoreVertical)

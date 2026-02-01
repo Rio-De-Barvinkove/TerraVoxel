@@ -50,6 +50,7 @@ namespace TerraVoxel.Voxel.Occlusion
         static readonly float[] CornerDistSq = new float[8];
         static readonly int[] CornerIndices = new int[8];
         static readonly Vector3[] TempCorners = new Vector3[8];
+        static readonly Comparer<int> CornerDistComparer = Comparer<int>.Create((a, b) => CornerDistSq[a].CompareTo(CornerDistSq[b]));
         bool _wasEnabled;
         float _maxRayDistSq;
         static bool _warnedLayerMissing;
@@ -244,7 +245,7 @@ namespace TerraVoxel.Voxel.Occlusion
                 CornerDistSq[i] = (BoundsCorners[i] - origin).sqrMagnitude;
                 CornerIndices[i] = i;
             }
-            Array.Sort(CornerIndices, 0, 8, Comparer<int>.Create((a, b) => CornerDistSq[a].CompareTo(CornerDistSq[b])));
+            Array.Sort(CornerIndices, 0, 8, CornerDistComparer);
             for (int i = 0; i < 8; i++)
                 TempCorners[i] = BoundsCorners[CornerIndices[i]];
             for (int i = 0; i < 8; i++)

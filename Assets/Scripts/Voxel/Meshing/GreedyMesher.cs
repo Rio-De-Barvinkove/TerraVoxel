@@ -37,6 +37,10 @@ namespace TerraVoxel.Voxel.Meshing
             public bool SameAs(MaskCell other) => Material == other.Material && Normal == other.Normal;
         }
 
+        /// <summary>Face indices: 0=NegX, 1=PosX, 2=NegY, 3=PosY, 4=NegZ, 5=PosZ. Use for edge-only invalidation.</summary>
+        public const int FaceMaskAll = 0x3F;
+        public static int FaceBit(int faceIndex) => 1 << faceIndex;
+
         [BurstCompile]
         struct GreedyMesherJob : IJob
         {
@@ -51,6 +55,9 @@ namespace TerraVoxel.Voxel.Meshing
             public byte FallbackMaterialIndex;
             [ReadOnly] public NeighborData Neighbors;
             public NativeArray<MaskCell> Mask;
+            public int FaceMask;
+            public bool EnableSkirts;
+            public float SkirtOffset;
 
             public void Execute()
             {
@@ -67,6 +74,20 @@ namespace TerraVoxel.Voxel.Meshing
 
                     for (x[d] = -1; x[d] < size; )
                     {
+                        if (FaceMask != 0 && FaceMask != FaceMaskAll)
+                        {
+                            if (x[d] != -1 && x[d] != size - 1)
+                            {
+                                x[d]++;
+                                continue;
+                            }
+                            int faceIndex = (x[d] == -1) ? (d * 2) : (d * 2 + 1);
+                            if ((FaceMask & (1 << faceIndex)) == 0)
+                            {
+                                x[d]++;
+                                continue;
+                            }
+                        }
                         int n = 0;
                         for (x[v] = 0; x[v] < size; x[v]++)
                         {
@@ -91,6 +112,7 @@ namespace TerraVoxel.Voxel.Meshing
                             }
                         }
 
+                        int sliceCoord = x[d];
                         x[d]++;
 
                         n = 0;
@@ -131,7 +153,7 @@ namespace TerraVoxel.Voxel.Meshing
                                 du[u] = w;
                                 dv[v] = h;
 
-                                EmitQuad(d, x, du, dv, c.Normal, c.Material);
+                                EmitQuad(d, x, du, dv, c.Normal, c.Material, sliceCoord);
 
                                 for (int dy = 0; dy < h; dy++)
                                 {
@@ -149,7 +171,7 @@ namespace TerraVoxel.Voxel.Meshing
                 }
             }
 
-            void EmitQuad(int d, int3 x, int3 du, int3 dv, sbyte normalSign, ushort material)
+            void EmitQuad(int d, int3 x, int3 du, int3 dv, sbyte normalSign, ushort material, int sliceCoord)
             {
                 Vector3 p0 = new Vector3(x.x, x.y, x.z) * Scale;
                 Vector3 p1 = new Vector3(x.x + du.x, x.y + du.y, x.z + du.z) * Scale;
@@ -158,6 +180,15 @@ namespace TerraVoxel.Voxel.Meshing
 
                 Vector3 n = d == 0 ? Vector3.right : (d == 1 ? Vector3.up : Vector3.forward);
                 if (normalSign < 0) n = -n;
+
+                bool isBoundary = (sliceCoord == -1 || sliceCoord == Size - 1);
+                bool hasNeighbor = (sliceCoord == -1 && ((d == 0 && Neighbors.HasNegX) || (d == 1 && Neighbors.HasNegY) || (d == 2 && Neighbors.HasNegZ)))
+                    || (sliceCoord == Size - 1 && ((d == 0 && Neighbors.HasPosX) || (d == 1 && Neighbors.HasPosY) || (d == 2 && Neighbors.HasPosZ)));
+                if (EnableSkirts && isBoundary && hasNeighbor && SkirtOffset > 0f)
+                {
+                    float off = SkirtOffset * Scale;
+                    p0 += n * off; p1 += n * off; p2 += n * off; p3 += n * off;
+                }
 
                 int vertStart = Vertices.Length;
                 byte resolved = ResolveMaterialIndex(material);
@@ -227,9 +258,13 @@ namespace TerraVoxel.Voxel.Meshing
             NativeArray<MaskCell> mask,
             NativeArray<ushort> empty,
             ref MeshData meshData,
-            float voxelScale = 0f)
+            float voxelScale = 0f,
+            int faceMask = 0,
+            bool enableSkirts = false,
+            float skirtOffset = 0.001f)
         {
             meshData.Clear();
+            if (faceMask == 0) faceMask = FaceMaskAll;
 
             // All NativeArray fields must be valid when scheduling a job.
             if (!neighbors.HasNegX) neighbors.NegX = empty;
@@ -254,13 +289,16 @@ namespace TerraVoxel.Voxel.Meshing
                 MaxMaterialIndex = maxMaterialIndex,
                 FallbackMaterialIndex = fallbackMaterialIndex,
                 Neighbors = neighbors,
-                Mask = mask
+                Mask = mask,
+                FaceMask = faceMask,
+                EnableSkirts = enableSkirts,
+                SkirtOffset = skirtOffset
             };
 
             return job.Schedule();
         }
 
-        public static void Build(ChunkData data, NeighborData neighbors, byte maxMaterialIndex, byte fallbackMaterialIndex, ref MeshData meshData)
+        public static void Build(ChunkData data, NeighborData neighbors, byte maxMaterialIndex, byte fallbackMaterialIndex, ref MeshData meshData, float voxelScale = 0f, int faceMask = 0, bool enableSkirts = false, float skirtOffset = 0.001f)
         {
             // All NativeArray fields must be valid when scheduling a job.
             var empty = new NativeArray<ushort>(0, Allocator.TempJob);
@@ -276,7 +314,7 @@ namespace TerraVoxel.Voxel.Meshing
             if (maxMaterialIndex > 0 && fallbackMaterialIndex > maxMaterialIndex)
                 fallbackMaterialIndex = maxMaterialIndex;
 
-            var handle = Schedule(data, neighbors, maxMaterialIndex, fallbackMaterialIndex, mask, empty, ref meshData);
+            var handle = Schedule(data, neighbors, maxMaterialIndex, fallbackMaterialIndex, mask, empty, ref meshData, voxelScale, faceMask, enableSkirts, skirtOffset);
             handle.Complete();
 
             mask.Dispose();

@@ -112,7 +112,7 @@ namespace TerraVoxel.Voxel.Systems
             }
 
             if (chunkManager == null)
-                chunkManager = FindObjectOfType<ChunkManager>();
+                chunkManager = FindAnyObjectByType<ChunkManager>();
 
             _sampleTimer += Time.unscaledDeltaTime;
             _summaryTimer += Time.unscaledDeltaTime;

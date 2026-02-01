@@ -384,18 +384,18 @@ MonoBehaviour:
   physicsOptimizer: {fileID: 448214055}
   maxSpawnsPerFrame: 20
   maxRemeshPerFrame: 12
-  maxRemovalsPerFrame: 3
-  maxGenJobsInFlight: 4
-  maxMeshJobsInFlight: 4
+  maxRemovalsPerFrame: 20
+  maxGenJobsInFlight: 12
+  maxMeshJobsInFlight: 12
   maxIntegrationsPerFrame: 16
   dynamicIntegrationLimit: 1
   maxIntegrationQueueSize: 8000
   streamingPaused: 0
   enablePreload: 1
-  preloadRadius: 10
-  maxPreloadsPerFrame: 2
-  removalBudgetMs: 1.5
-  workDropDistance: 12
+  preloadRadius: 2
+  maxPreloadsPerFrame: 20
+  removalBudgetMs: 3
+  workDropDistance: 20
   workDropAngleDeg: 80
   workDropMoveAngleDeg: 80
   workDropCooldown: 0.4
@@ -404,17 +404,20 @@ MonoBehaviour:
   viewCone: {fileID: 448214056}
   enableFullLod: 1
   enableFarRangeLod: 1
-  farRangeRadius: 6
+  farRangeRadius: 20
   lodSettings: {fileID: 11400000, guid: 868f81b94f723684ea3dd726391b24e2, type: 2}
-  maxLodTransitionsPerFrame: 2
+  maxLodTransitionsPerFrame: 40
   lodTransitionCooldown: 0.2
-  maxSvoBuildsPerFrame: 1
+  maxSvoBuildsPerFrame: 20
+  enableLodTransitionLog: 1
   occlusionCuller: {fileID: 448214058}
   svoManager: {fileID: 448214057}
   streamingBudget:
     enabled: 0
     maxMsPerFrame: 3
   chunkLayerName: Terrain
+  voxelMaterial: {fileID: 0}
+  voxelMaterialLibrary: {fileID: 0}
   saveManager: {fileID: 448214051}
   modManager: {fileID: 448214053}
   hybridSave: {fileID: 448214054}
@@ -436,12 +439,14 @@ MonoBehaviour:
   meshSlowMs: 24
   integrationSlowMs: 8
   adaptiveCooldown: 0.5
-  adaptiveDrawCallThreshold: 0
   memoryPressureThresholdMb: 0
   graphicsMemoryThresholdMb: 0
   safeSpawnTimeoutSeconds: 10
   maxRebuildNeighborsDepth: 2
   maxRequestRemeshNeighborsDepth: 1
+  enableEdgeOnlyRemesh: 1
+  enableSeamSkirts: 1
+  seamSkirtOffset: 0.002
 --- !u!4 &448214048
 Transform:
   m_ObjectHideFlags: 0
@@ -654,6 +659,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Streaming.ChunkViewConePrioritizer
   enable: 1
+  distanceOnly: 0
   viewTransform: {fileID: 983036173}
   useMainCamera: 1
   ignoreVertical: 1

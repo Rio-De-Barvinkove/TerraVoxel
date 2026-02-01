@@ -18,6 +18,8 @@ namespace TerraVoxel.Voxel.Svo
 
     public static class SvoBuilder
     {
+        static readonly int[] _countsBuffer = new int[256];
+
         struct BuildState
         {
             public int X0, Y0, Z0, Size, NodeIndex;
@@ -199,10 +201,11 @@ namespace TerraVoxel.Voxel.Svo
             return true;
         }
 
-        /// <summary>Modal (most frequent non-zero) material in region; density = average if present. O(size^3).</summary>
+        /// <summary>Modal (most frequent non-zero) material in region; density = average if present. O(size^3). Uses static buffer to avoid GC allocation.</summary>
         static void SampleRegionMaterialAndDensity(ChunkData data, int x0, int y0, int z0, int size, bool useDensity, out byte material, out byte density)
         {
-            int[] counts = new int[256];
+            System.Array.Clear(_countsBuffer, 0, 256);
+            int[] counts = _countsBuffer;
             float densSum = 0f;
             int densCount = 0;
 
