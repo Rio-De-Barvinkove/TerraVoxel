@@ -89,12 +89,8 @@
 
 ## Оптимізація:
 
-3. Dual Contouring
-4. Transvoxel
-5. Skip Hidden Faces
-6. Face Culling по чанках
-7. Backface Culling
-8. Frustum Culling
+
+
 9. Occlusion Culling (software)
 10. Hierarchical Occlusion Culling
 11. Portal Culling (печери)
@@ -107,7 +103,6 @@
 18. Mesh Simplification для дальніх LOD
 19. Impostors / Billboards
 20. GPU Instancing
-21. SRP Batching
 22. Static Batching
 23. Material Atlasing
 24. Texture Atlasing
@@ -132,23 +127,16 @@
 43. Bitpacking воксельних даних
 44. Palette-based Voxels
 45. Compression (RLE)
-46. Sparse Voxel Octree (SVO)
 47. DAG-based SVO
 48. Sparse Chunks
 49. Region-based Storage
 50. Paging чанків
 51. Chunk Streaming
-52. Async Loading
-53. Background Generation Threads
-54. Job System
-55. Burst Compilation
-56. SIMD оптимізації
 57. Lock-free Queues
 58. Double Buffering чанків
 59. Dirty Chunk Updates
 60. Partial Mesh Rebuild
 61. Face-level Updates
-62. Greedy Remesh локальних областей
 63. Mesh Stitching між чанками
 64. Neighbor-aware Meshing
 65. Early Exit при генерації

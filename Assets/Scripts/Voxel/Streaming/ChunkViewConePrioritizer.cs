@@ -14,7 +14,7 @@ namespace TerraVoxel.Voxel.Streaming
     {
         [SerializeField] bool enable = true;
         [Tooltip("When true: strict priority = distance only (closer = higher). Ignores view cone and visual bonuses.")]
-        [SerializeField] bool distanceOnly = false;
+        [SerializeField] bool distanceOnly = true;
         [SerializeField] Transform viewTransform;
         [SerializeField] bool useMainCamera = true;
         [SerializeField] bool ignoreVertical = true;
@@ -47,6 +47,7 @@ namespace TerraVoxel.Voxel.Streaming
         static int CompareEntryByScoreDescending(Entry a, Entry b) => a.Score.CompareTo(b.Score);
 
         public bool Enabled => enable;
+        public bool DistanceOnly => distanceOnly;
         public int Count => _heap.Count;
 
         /// <summary>Score for a chunk (distance, view cone, surface band). Called once per enqueue; weights not normalized. When distanceOnly: score = 1/(1+dist), strict priority = distance (closer = higher).</summary>

@@ -74,11 +74,12 @@ namespace TerraVoxel.Voxel.Streaming
         [SerializeField] bool enableFarRangeLod = false;
         [SerializeField] int farRangeRadius = 6;
         [SerializeField] ChunkLodSettings lodSettings;
-        [Tooltip("LOD transitions per frame; higher = faster upgrades when approaching. Default 2 may be slow with many chunks.")]
-        [SerializeField] int maxLodTransitionsPerFrame = 8;
+        [Tooltip("LOD transitions per frame; higher = faster upgrades when approaching.")]
+        [SerializeField] int maxLodTransitionsPerFrame = 16;
         [Tooltip("Cooldown (sec) before downgrade; upgrades (approaching) bypass cooldown.")]
-        [SerializeField] float lodTransitionCooldown = 0.2f;
-        [SerializeField] int maxSvoBuildsPerFrame = 1;
+        [SerializeField] float lodTransitionCooldown = 0.15f;
+        [Tooltip("Max SVO builds per frame; increase if SVO chunks lag when approaching.")]
+        [SerializeField] int maxSvoBuildsPerFrame = 4;
         [Tooltip("Log LOD transitions (Dist, CurrentStep, TargetStep) for debugging.")]
         [SerializeField] bool enableLodTransitionLog = false;
         [Header("Occlusion")]
@@ -137,8 +138,8 @@ namespace TerraVoxel.Voxel.Streaming
         [Header("Seam Fix (Skirts)")]
         [Tooltip("Expand boundary quads slightly into neighbor space to hide T-junctions and seams.")]
         [SerializeField] bool enableSeamSkirts = true;
-        [Tooltip("Vertex offset for skirts (voxel units). ~0.001-0.01 typical.")]
-        [SerializeField] [Range(0.0001f, 0.1f)] float seamSkirtOffset = 0.002f;
+        [Tooltip("Vertex offset for skirts (voxel units). ~0.005-0.02 for microvoxel (0.1).")]
+        [SerializeField] [Range(0.0001f, 0.1f)] float seamSkirtOffset = 0.008f;
 
         readonly Dictionary<ChunkCoord, Chunk> _active = new Dictionary<ChunkCoord, Chunk>();
         readonly Dictionary<ChunkCoord, CachedChunkData> _dataCache = new Dictionary<ChunkCoord, CachedChunkData>();
@@ -1305,6 +1306,22 @@ namespace TerraVoxel.Voxel.Streaming
                         chunk.LodStep = Mathf.Max(1, desired.LodStep);
                         chunk.LodStartTime = Time.realtimeSinceStartupAsDouble;
                     }
+                    else if (desired.Mode == ChunkLodMode.Svo && svoManager != null)
+                    {
+                        GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
+                        if (svoManager.TryGetOrBuildMesh(coord, chunk.Data, Mathf.Max(1, desired.LodStep), maxMaterialIndex, fallbackMaterialIndex, out var svoMesh))
+                        {
+                            chunk.ApplySharedMesh(svoMesh, addCollider: false);
+                            if (srpBatchingConfig != null) srpBatchingConfig.ApplyToChunk(chunk);
+                            else if (voxelMaterial != null) chunk.SetSharedMaterial(voxelMaterial);
+                            chunk.UsesSvo = true;
+                            chunk.LodStep = desired.LodStep;
+                            chunk.IsLowLod = true;
+                            chunk.LodStartTime = Time.realtimeSinceStartupAsDouble;
+                        }
+                        else
+                            ScheduleMeshForChunk(coord, task.SpawnStart, Mathf.Max(1, desired.LodStep));
+                    }
                     else
                     {
                         int lodStep = Mathf.Max(1, desired.LodStep);
@@ -1751,7 +1768,7 @@ namespace TerraVoxel.Voxel.Streaming
                 coord = default;
                 return false;
             }
-            if (viewCone != null && viewCone.Enabled)
+            if (viewCone != null && viewCone.Enabled && !viewCone.DistanceOnly)
             {
                 if (!viewCone.TryDequeue(out coord))
                     return false;
@@ -2412,38 +2429,51 @@ namespace TerraVoxel.Voxel.Streaming
             double now = Time.realtimeSinceStartupAsDouble;
             int transitionLimit = maxLodTransitionsPerFrame;
             if (scaleJobsByProcessorCount)
-                transitionLimit = Mathf.Max(transitionLimit, CurrentMaxMeshJobsInFlight);
+                transitionLimit = Mathf.Max(transitionLimit, CurrentMaxMeshJobsInFlight * 2);
+            transitionLimit = Mathf.Min(transitionLimit, 64);
+
+            var upgrades = new List<(ChunkCoord coord, Chunk chunk, int dist, ChunkLodLevel desired, ChunkLodLevel current)>();
+            var downgrades = new List<(ChunkCoord coord, Chunk chunk, int dist, ChunkLodLevel desired, ChunkLodLevel current)>();
 
             foreach (var kvp in _active)
             {
-                if (transitions >= transitionLimit) break;
                 if (BudgetExceeded()) break;
-                if (_meshJobs.Count >= CurrentMaxMeshJobsInFlight) continue;
-
                 var coord = kvp.Key;
                 var chunk = kvp.Value;
                 if (chunk == null) continue;
                 if (_preloaded.Contains(coord)) continue;
+                if (IsChunkBusy(coord) || IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
 
                 int dist = Mathf.Max(Mathf.Abs(coord.X - center.X), Mathf.Abs(coord.Z - center.Z));
                 ChunkLodMode currentMode = chunk.UsesSvo ? ChunkLodMode.Svo : ChunkLodMode.Mesh;
                 int currentStep = Mathf.Max(1, chunk.LodStep);
                 var desired = lodSettings.ResolveLevel(dist, currentStep, currentMode);
                 if (desired.Mode == currentMode && desired.LodStep == currentStep) continue;
-                var currentLevel = new ChunkLodLevel
-                {
-                    MinDistance = 0,
-                    MaxDistance = int.MaxValue,
-                    LodStep = currentStep,
-                    Hysteresis = 0,
-                    Mode = currentMode
-                };
+
+                var currentLevel = new ChunkLodLevel { MinDistance = 0, MaxDistance = int.MaxValue, LodStep = currentStep, Hysteresis = 0, Mode = currentMode };
                 bool isUpgrade = lodSettings.GetDetailRankFor(desired) < lodSettings.GetDetailRankFor(currentLevel);
                 if (!isUpgrade && lodTransitionCooldown > 0f && now - chunk.LodStartTime < lodTransitionCooldown) continue;
+
+                if (isUpgrade)
+                    upgrades.Add((coord, chunk, dist, desired, currentLevel));
+                else
+                    downgrades.Add((coord, chunk, dist, desired, currentLevel));
+            }
+
+            upgrades.Sort((a, b) => a.dist.CompareTo(b.dist));
+            downgrades.Sort((a, b) => b.dist.CompareTo(a.dist));
+
+            foreach (var t in upgrades)
+            {
+                if (transitions >= transitionLimit) break;
+                if (BudgetExceeded()) break;
+                if (_meshJobs.Count >= CurrentMaxMeshJobsInFlight) break;
+                var (coord, chunk, dist, desired, currentLevel) = t;
+                if (chunk == null) continue;
                 if (IsChunkBusy(coord) || IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
 
                 if (enableLodTransitionLog)
-                    Debug.Log($"[ChunkManager] LOD transition: Dist={dist}, Current Step={currentStep} Mode={currentMode}, Target Step={desired.LodStep} Mode={desired.Mode}");
+                    Debug.Log($"[ChunkManager] LOD upgrade: Dist={dist}, Current Step={currentLevel.LodStep} Mode={currentLevel.Mode}, Target Step={desired.LodStep} Mode={desired.Mode}");
 
                 if (desired.Mode == ChunkLodMode.None)
                 {
@@ -2465,6 +2495,62 @@ namespace TerraVoxel.Voxel.Streaming
                     if (svoManager.TryGetOrBuildMesh(coord, chunk.Data, desired.LodStep, maxMaterialIndex, fallbackMaterialIndex, out var svoMesh))
                     {
                         chunk.ApplySharedMesh(svoMesh, addCollider: false);
+                        if (srpBatchingConfig != null) srpBatchingConfig.ApplyToChunk(chunk);
+                        else if (voxelMaterial != null) chunk.SetSharedMaterial(voxelMaterial);
+                        chunk.UsesSvo = true;
+                        chunk.LodStep = desired.LodStep;
+                        chunk.IsLowLod = true;
+                        chunk.LodStartTime = now;
+                        transitions++;
+                        svoBuilds++;
+                    }
+                    continue;
+                }
+
+                if (ScheduleMeshForChunk(coord, 0, desired.LodStep))
+                {
+                    chunk.UsesSvo = false;
+                    chunk.LodStep = desired.LodStep;
+                    chunk.IsLowLod = desired.LodStep > 1;
+                    chunk.LodStartTime = now;
+                    transitions++;
+                }
+            }
+
+            foreach (var t in downgrades)
+            {
+                if (transitions >= transitionLimit) break;
+                if (BudgetExceeded()) break;
+                if (_meshJobs.Count >= CurrentMaxMeshJobsInFlight) break;
+                var (coord, chunk, dist, desired, currentLevel) = t;
+                if (chunk == null) continue;
+                if (IsChunkBusy(coord) || IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
+
+                if (enableLodTransitionLog)
+                    Debug.Log($"[ChunkManager] LOD downgrade: Dist={dist}, Current Step={currentLevel.LodStep} Mode={currentLevel.Mode}, Target Step={desired.LodStep} Mode={desired.Mode}");
+
+                if (desired.Mode == ChunkLodMode.None)
+                {
+                    chunk.SetRendererEnabled(false);
+                    chunk.SetColliderEnabled(false);
+                    chunk.UsesSvo = false;
+                    chunk.LodStep = desired.LodStep;
+                    chunk.IsLowLod = true;
+                    chunk.LodStartTime = now;
+                    transitions++;
+                    continue;
+                }
+
+                if (desired.Mode == ChunkLodMode.Svo)
+                {
+                    if (svoManager == null) continue;
+                    if (svoBuilds >= maxSvoBuildsPerFrame) continue;
+                    GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
+                    if (svoManager.TryGetOrBuildMesh(coord, chunk.Data, desired.LodStep, maxMaterialIndex, fallbackMaterialIndex, out var svoMesh))
+                    {
+                        chunk.ApplySharedMesh(svoMesh, addCollider: false);
+                        if (srpBatchingConfig != null) srpBatchingConfig.ApplyToChunk(chunk);
+                        else if (voxelMaterial != null) chunk.SetSharedMaterial(voxelMaterial);
                         chunk.UsesSvo = true;
                         chunk.LodStep = desired.LodStep;
                         chunk.IsLowLod = true;
