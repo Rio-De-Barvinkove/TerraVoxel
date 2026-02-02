@@ -6,6 +6,7 @@ namespace TerraVoxel.Voxel.Lod
     /// One LOD level: distance range [MinDistance, MaxDistance], LodStep, Hysteresis and Mode.
     /// MinDistance / MaxDistance in chunk units; range must be non-empty (MaxDistance &gt;= MinDistance; Min=Max allowed for single-chunk range).
     /// Hysteresis limits LOD flip-flop at boundaries; capped by MaxHysteresis.
+    /// In runtime, any computation of MaxDistance + Hysteresis must use MaxDistanceWithHysteresis to avoid overflow. MaxDistance == int.MaxValue is handled correctly (unbounded far).
     /// </summary>
     [Serializable]
     public struct ChunkLodLevel
@@ -33,7 +34,7 @@ namespace TerraVoxel.Voxel.Lod
             Hysteresis >= 0 &&
             Hysteresis <= MaxHysteresis;
 
-        /// <summary>Safe add for hysteresis: returns Min(MaxDistance + hysteresis, int.MaxValue) to avoid overflow.</summary>
+        /// <summary>Safe add for hysteresis: returns Min(MaxDistance + hysteresis, int.MaxValue) to avoid overflow. Use this for all runtime MaxDistance + Hysteresis; when maxDistance &gt;= int.MaxValue returns int.MaxValue.</summary>
         public static int MaxDistanceWithHysteresis(int maxDistance, int hysteresis)
         {
             if (maxDistance >= int.MaxValue) return int.MaxValue;

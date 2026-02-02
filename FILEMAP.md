@@ -48,9 +48,9 @@
   - `ChunkPhysicsOptimizer.cs` — колайдери тільки в активному радіусі; lock _stateLock; tooltips; PruneMissingInner doc (використовується ChunkPhysicsManager або безпосередньо ChunkManager).
   - `ChunkViewConePrioritizer.cs` — max-heap + min-heap; O(log n) dequeue (TryDequeue) і O(log n) remove-lowest (TryRemoveLowestPriority через _minHeap); при viewCone.Enabled TryDequeuePending циклом TryDequeue поки _pendingSet.Remove; EnqueueWithPriority, ComputeScore; DistanceOnly (default true) — score = 1/(1+dist); IsInViewCone; Clear() trim capacity.
 - LOD/
-  - `ChunkLodLevel.cs` — struct LOD‑рівня (MinDistance, MaxDistance, LodStep, Hysteresis, Mode); IsValid; MaxDistanceWithHysteresis (overflow‑safe); ChunkLodMode: Mesh, Svo, Billboard, None.
-  - `ChunkLodSettings.cs` (SO) — список рівнів, DefaultLevelFarDistance; OnValidate (overlap/duplicate/far‑range warning); GetDetailRank, GetDetailRankFor; TryGetLevelForDistance; ResolveLevel симетрична hysteresis (overflow‑safe).
-  - `ChunkLodManager.cs` — streaming-side LOD (internal): реалізує ProcessFullLod, ProcessLodUpgrades; делегує ProcessFarRangeLod, GetInitialLodStep до ChunkManager; живе в LOD (разом з ChunkLodLevel/ChunkLodSettings).
+  - `ChunkLodLevel.cs` — struct LOD‑рівня (MinDistance, MaxDistance, LodStep, Hysteresis, Mode); IsValid; MaxDistanceWithHysteresis (overflow‑safe, XML: use for all runtime MaxDistance+Hysteresis, int.MaxValue handled); ChunkLodMode: Mesh, Svo, Billboard, None.
+  - `ChunkLodSettings.cs` (SO) — список рівнів, DefaultLevelFarDistance (0 = disabled doc), UseDefaultHysteresisWhenZero; OnValidate (overlap/duplicate/gap/far‑range/single-chunk Min=Max warning, single pass); GetDetailRank, GetDetailRankFor; TryGetLevelForDistance; ResolveLevel hysteresis (overflow‑safe, target MaxDistance==int.MaxValue comment).
+  - `ChunkLodManager.cs` — streaming-side LOD (internal): ProcessFullLod, ProcessLodUpgrades; main-thread only, no sync; dist >= 0 before ResolveLevel; делегує ProcessFarRangeLod, GetInitialLodStep до ChunkManager.
 - Occlusion/
   - `ChunkOcclusionCuller.cs` — frustum + optional raycast occlusion; lock _occludedLock; _activeCoordsThisTick cleanup; recheckOccludedPerFrame (бюджет повторної перевірки _occluded щокадру); GetRaycastMask warning; AnyRayUnblocked, GetChunkBounds, RestoreAll doc.
 - Svo/

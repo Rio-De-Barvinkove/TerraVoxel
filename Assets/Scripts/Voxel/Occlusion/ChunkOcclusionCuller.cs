@@ -10,6 +10,7 @@ namespace TerraVoxel.Voxel.Occlusion
     /// Occlusion culling for chunk renderers: frustum and optional raycast.
     /// Uses fixed maxChecksPerFrame and tickBudgetMs; consider adaptive limits for highly variable load.
     /// Raycast occlusion is applied only to full-detail mesh chunks (!UsesSvo &amp;&amp; LodStep &lt;= 1); LOD/SVO chunks are skipped for consistent bounds and performance.
+    /// Camera.main and manager are null-checked in Tick. _candidates is reused (Clear + Add each Tick) to avoid per-frame list allocation. Physics errors in AnyRayUnblocked are caught and logged once (chunk treated as visible).
     /// </summary>
     [DisallowMultipleComponent]
     public class ChunkOcclusionCuller : MonoBehaviour
@@ -212,6 +213,7 @@ namespace TerraVoxel.Voxel.Occlusion
             }
         }
 
+        /// <summary>Returns layer mask for raycasts. If occluderLayerName is empty or layer not found, uses occluderMask and logs a warning once.</summary>
         LayerMask GetRaycastMask()
         {
             if (string.IsNullOrEmpty(occluderLayerName))
@@ -250,7 +252,7 @@ namespace TerraVoxel.Voxel.Occlusion
                     occluderInSphere = true;
                 }
                 FillBoundsCorners(bounds);
-                float padding = raycastPadding;
+                float padding = raycastPadding; // Could scale by bounds.size.magnitude for variable chunk scales (future).
                 int rayCount = 8;
                 if (occluderInSphere)
                 {
@@ -289,7 +291,7 @@ namespace TerraVoxel.Voxel.Occlusion
             }
         }
 
-        /// <summary>Sorts static BoundsCorners in place by distance to origin (nearest first). Uses Array.Sort with static buffers to avoid per-call allocation.</summary>
+        /// <summary>Sorts static BoundsCorners in place by distance to origin (nearest first). O(8 log 8) via Array.Sort with static buffers; no per-call allocation.</summary>
         static void SortCornersByDistanceTo(Vector3 origin)
         {
             for (int i = 0; i < 8; i++)
@@ -304,6 +306,7 @@ namespace TerraVoxel.Voxel.Occlusion
                 BoundsCorners[i] = TempCorners[i];
         }
 
+        /// <summary>Fills static BoundsCorners with the 8 corners of the bounds (min/max combinations).</summary>
         static void FillBoundsCorners(Bounds b)
         {
             Vector3 min = b.min;

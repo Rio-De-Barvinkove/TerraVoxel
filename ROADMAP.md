@@ -90,6 +90,7 @@
 - [X] **Edge-only remesh async:** ScheduleFaceRemeshJobAsync, ProcessFaceMeshJobs (без блокування main thread); face mask для інвалідованих граней; maxFaceRemeshPerFrame.
 - [X] **Job scaling:** scaleJobsByProcessorCount — maxGenJobsInFlight, maxMeshJobsInFlight, maxIntegrationsPerFrame масштабуються по SystemInfo.processorCount.
 - [X] **LOD (overflow/hysteresis):** ChunkLodLevel.MaxDistanceWithHysteresis; ChunkLodSettings ResolveLevel без overflow; OnValidate far-range warning (last level MaxDistance).
+- [X] **LOD edge cases:** ChunkLodLevel XML (runtime MaxDistance+Hysteresis via MaxDistanceWithHysteresis, int.MaxValue handled); ChunkLodSettings DefaultLevelFarDistance=0 doc, OnValidate single-chunk range warning (Min=Max), UseDefaultHysteresisWhenZero; ChunkLodManager main-thread only doc, dist >= 0 before ResolveLevel.
 - [X] **Empty chunk remesh fix:** HasAnySolid перевірка — порожні чанки не йдуть у нескінченний remesh, renderer/collider вимикаються.
 - [X] **RebuildNeighborsInner:** перевірка Y bounds (ColumnChunks) для сусідів; не чергує неіснуючі neighbor.
 - [X] **Seam skirts:** enableSeamSkirts, seamSkirtOffset для зменшення щілин на стиках чанків.
@@ -99,6 +100,20 @@
 ---
 
 ## Оптимізація (CPU — що залишилось):
+
+Oclussion
+Що не реалізовував (потрібні окремі рішення/план):
+Адаптивні ліміти для maxChecksPerFrame / tickBudgetMs (у tooltip вже згадано "Consider adaptive budget later").
+Динамічне масштабування raycastPadding від розміру чанка (лишив коментар у коді).
+ObjectPool для _candidates — не потрібен, список один і перевикористовується.
+Додаткові lock’и — поточна синхронізація достатня для однопоточного Tick і доступу під lock до _occluded.
+У класі немає поля player; використовуються Camera.main і ChunkManager, null-перевірки для них уже є.
+
+
+
+
+
+
 
 ## Чеклист оптимізацій (загальний, не всі реалізовані)
 9. Occlusion Culling (software)

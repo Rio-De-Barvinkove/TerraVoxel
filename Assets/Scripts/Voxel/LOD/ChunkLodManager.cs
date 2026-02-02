@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Lod
 {
-    /// <summary>Streaming-side LOD: implements ProcessFullLod, ProcessLodUpgrades; delegates ProcessFarRangeLod, GetInitialLodStep to ChunkManager.</summary>
+    /// <summary>Streaming-side LOD: implements ProcessFullLod, ProcessLodUpgrades; delegates ProcessFarRangeLod, GetInitialLodStep to ChunkManager. Runs on main thread only; no synchronization required.</summary>
     internal sealed class ChunkLodManager
     {
         readonly ChunkManager.Context _ctx;
@@ -42,7 +42,7 @@ namespace TerraVoxel.Voxel.Lod
                 if (_ctx.Preloaded.Contains(coord)) continue;
                 if (_ctx.IsChunkBusy(coord) || _ctx.Integration.IsInIntegrationSet(coord) || _ctx.PendingCachedMeshes.ContainsKey(coord)) continue;
 
-                int dist = Mathf.Max(Mathf.Abs(coord.X - center.X), Mathf.Abs(coord.Z - center.Z));
+                int dist = Mathf.Max(0, Mathf.Max(Mathf.Abs(coord.X - center.X), Mathf.Abs(coord.Z - center.Z)));
                 ChunkLodMode currentMode = chunk.UsesSvo ? ChunkLodMode.Svo : ChunkLodMode.Mesh;
                 int currentStep = Mathf.Max(1, chunk.LodStep);
                 var desired = _ctx.LodSettings.ResolveLevel(dist, currentStep, currentMode);
