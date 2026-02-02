@@ -35,6 +35,8 @@ namespace TerraVoxel.Voxel.Streaming
 
         /// <summary>Priority queue: higher score = dequeued first. Stored as (coord, score); heap ordered by score descending.</summary>
         readonly List<Entry> _heap = new List<Entry>(256);
+        /// <summary>Min-heap by score for TryRemoveLowestPriority (O(log n) remove-lowest). Same entries as _heap.</summary>
+        readonly List<Entry> _minHeap = new List<Entry>(256);
         const int HeapInitialCapacity = 256;
 
         struct Entry
@@ -45,6 +47,9 @@ namespace TerraVoxel.Voxel.Streaming
 
         /// <summary>Comparer for priority: higher score = higher priority (dequeue first).</summary>
         static int CompareEntryByScoreDescending(Entry a, Entry b) => a.Score.CompareTo(b.Score);
+
+        /// <summary>Comparer for min-heap: lower score = higher priority (remove-lowest first).</summary>
+        static int CompareEntryByScoreAscending(Entry a, Entry b) => a.Score.CompareTo(b.Score);
 
         public bool Enabled => enable;
         public bool DistanceOnly => distanceOnly;
@@ -142,6 +147,8 @@ namespace TerraVoxel.Voxel.Streaming
             var entry = new Entry { Coord = coord, Score = score };
             _heap.Add(entry);
             HeapBubbleUp(_heap.Count - 1);
+            _minHeap.Add(entry);
+            MinHeapBubbleUp(_minHeap.Count - 1);
         }
 
         /// <summary>Dequeue the coord with highest score. Returns false if queue empty (no fallback to random coord).</summary>
@@ -161,25 +168,17 @@ namespace TerraVoxel.Voxel.Streaming
             return true;
         }
 
-        /// <summary>Remove the lowest-priority entry (smallest score). O(n) to find min in max-heap; heap structure preserved after swap+bubble.</summary>
+        /// <summary>Remove the lowest-priority entry (smallest score). O(log n) via min-heap.</summary>
         public bool TryRemoveLowestPriority(out ChunkCoord coord)
         {
             coord = default;
-            if (_heap.Count == 0) return false;
-            int best = 0;
-            for (int i = 1; i < _heap.Count; i++)
-            {
-                if (CompareEntryByScoreDescending(_heap[i], _heap[best]) < 0)
-                    best = i;
-            }
-            coord = _heap[best].Coord;
-            int last = _heap.Count - 1;
-            if (best != last)
-            {
-                _heap[best] = _heap[last];
-                HeapBubbleDown(best);
-            }
-            _heap.RemoveAt(last);
+            if (_minHeap.Count == 0) return false;
+            coord = _minHeap[0].Coord;
+            int last = _minHeap.Count - 1;
+            _minHeap[0] = _minHeap[last];
+            _minHeap.RemoveAt(last);
+            if (_minHeap.Count > 0)
+                MinHeapBubbleDown(0);
             return true;
         }
 
@@ -209,8 +208,11 @@ namespace TerraVoxel.Voxel.Streaming
         public void Clear()
         {
             _heap.Clear();
+            _minHeap.Clear();
             if (_heap.Capacity > HeapInitialCapacity)
                 _heap.Capacity = HeapInitialCapacity;
+            if (_minHeap.Capacity > HeapInitialCapacity)
+                _minHeap.Capacity = HeapInitialCapacity;
         }
 
         void HeapBubbleUp(int i)
@@ -248,6 +250,43 @@ namespace TerraVoxel.Voxel.Streaming
             var t = _heap[a];
             _heap[a] = _heap[b];
             _heap[b] = t;
+        }
+
+        void MinHeapSwap(int a, int b)
+        {
+            var t = _minHeap[a];
+            _minHeap[a] = _minHeap[b];
+            _minHeap[b] = t;
+        }
+
+        void MinHeapBubbleUp(int i)
+        {
+            while (i > 0)
+            {
+                int parent = (i - 1) / 2;
+                if (CompareEntryByScoreAscending(_minHeap[i], _minHeap[parent]) >= 0)
+                    break;
+                MinHeapSwap(i, parent);
+                i = parent;
+            }
+        }
+
+        void MinHeapBubbleDown(int i)
+        {
+            int count = _minHeap.Count;
+            while (true)
+            {
+                int left = 2 * i + 1;
+                int right = 2 * i + 2;
+                int smallest = i;
+                if (left < count && CompareEntryByScoreAscending(_minHeap[left], _minHeap[smallest]) < 0)
+                    smallest = left;
+                if (right < count && CompareEntryByScoreAscending(_minHeap[right], _minHeap[smallest]) < 0)
+                    smallest = right;
+                if (smallest == i) break;
+                MinHeapSwap(i, smallest);
+                i = smallest;
+            }
         }
 
         Transform ResolveViewTransform(Transform player)

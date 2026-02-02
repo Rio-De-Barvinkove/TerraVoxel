@@ -16,11 +16,11 @@ namespace TerraVoxel.Voxel.Streaming
 {
     /// <summary>
     /// Maintains active chunks around a tracked transform. Spawns limited count per frame.
-    /// Monolithic: streaming, LOD, physics, caching, save, adaptive limits in one class (consider splitting into ChunkLoader/LodManager etc.).
+    /// Facade: delegates to ChunkLoader, ChunkJobsManager, ChunkIntegrationManager, ChunkLodManager, ChunkCacheManager, ChunkAdaptiveLimitsManager, ChunkWorkDropManager, ChunkSafeSpawnManager, ChunkPhysicsManager when present; keeps full fallback implementations in this class.
     /// Intended to run on main thread (Update); job handles are only completed on main thread. All state is accessed from main thread only; no locking. If ever used from multiple threads, add synchronization.
     /// _pendingSet + _pending duplicate coords for O(1) membership; data/mesh caches use eviction (LRU-style). _emptyMaterials uses Allocator.Persistent and must be disposed (OnDestroy).
     /// </summary>
-    public class ChunkManager : MonoBehaviour
+    public partial class ChunkManager : MonoBehaviour
     {
         [SerializeField] Transform player;
         [SerializeField] Chunk chunkPrefab;
@@ -146,6 +146,9 @@ namespace TerraVoxel.Voxel.Streaming
         int _cacheOpsThisFrame;
         readonly Queue<ChunkCoord> _pending = new Queue<ChunkCoord>();
         readonly HashSet<ChunkCoord> _pendingSet = new HashSet<ChunkCoord>();
+        /// <summary>Min-heap by 2D distance (XZ) from _pendingDequeueCenter; used when viewCone is null/disabled. Rebuilt when center changes or after RebuildPendingQueue.</summary>
+        readonly List<ChunkCoord> _pendingDistanceHeap = new List<ChunkCoord>();
+        ChunkCoord _pendingDequeueCenter;
         readonly Queue<ChunkCoord> _preload = new Queue<ChunkCoord>();
         readonly Queue<ChunkCoord> _removeQueue = new Queue<ChunkCoord>();
         readonly HashSet<ChunkCoord> _preloadSet = new HashSet<ChunkCoord>();
@@ -175,6 +178,15 @@ namespace TerraVoxel.Voxel.Streaming
         readonly HashSet<ChunkCoord> _faceRemeshSet = new HashSet<ChunkCoord>();
         readonly Dictionary<ChunkCoord, FaceMeshTask> _faceMeshJobs = new Dictionary<ChunkCoord, FaceMeshTask>();
         readonly List<RemoveCandidate> _removeCandidates = new List<RemoveCandidate>(256);
+        /// <summary>Reused buffers for DropWorkQueues; Clear() before use.</summary>
+        readonly List<ChunkCoord> _dropPendingKeep = new List<ChunkCoord>();
+        readonly List<ChunkCoord> _dropPreloadKeep = new List<ChunkCoord>();
+        readonly List<ChunkCoord> _dropRemeshKeep = new List<ChunkCoord>();
+        readonly List<(ChunkCoord coord, int mask)> _dropFaceRemeshKeep = new List<(ChunkCoord, int)>();
+        readonly List<ChunkCoord> _dropFaceMeshStale = new List<ChunkCoord>();
+        readonly List<ChunkCoord> _dropStale = new List<ChunkCoord>();
+        readonly List<ChunkCoord> _dropCachedStale = new List<ChunkCoord>();
+        readonly List<ChunkCoord> _dropRemeshAfter = new List<ChunkCoord>();
         int _integrationsLastFrame;
         ChunkPool _pool;
         IChunkGenerator _generator;
@@ -222,8 +234,21 @@ namespace TerraVoxel.Voxel.Streaming
         int _rebuildNeighborsDepth;
         int _requestRemeshDepth;
 
+        Context _context;
+        ChunkLoader _loader;
+        ChunkJobsManager _jobs;
+        ChunkIntegrationManager _integration;
+        ChunkLodManager _lod;
+        ChunkCacheManager _cache;
+        ChunkAdaptiveLimitsManager _adaptive;
+        ChunkWorkDropManager _workDrop;
+        ChunkSafeSpawnManager _safeSpawn;
+        ChunkPhysicsManager _physics;
+
         bool HasAnySolid(ChunkData data)
         {
+            if (_integration != null)
+                return _integration.HasAnySolid(data);
             if (!data.Materials.IsCreated) return false;
             var mats = data.Materials;
             for (int i = 0; i < mats.Length; i++)
@@ -233,7 +258,7 @@ namespace TerraVoxel.Voxel.Streaming
             return false;
         }
 
-        struct RemoveCandidate
+        internal struct RemoveCandidate
         {
             public ChunkCoord Coord;
             public int Distance;
@@ -245,7 +270,7 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
-        struct GenTask
+        internal struct GenTask
         {
             public ChunkCoord Coord;
             public Chunk Chunk;
@@ -261,7 +286,7 @@ namespace TerraVoxel.Voxel.Streaming
             public int SliceSize;
         }
 
-        struct MeshTask
+        internal struct MeshTask
         {
             public ChunkCoord Coord;
             public Chunk Chunk;
@@ -270,24 +295,7 @@ namespace TerraVoxel.Voxel.Streaming
             public double SpawnStart;
         }
 
-        struct FaceMeshJobHandle
-        {
-            public JobHandle Handle;
-            public MeshData MeshData;
-            public NativeArray<ushort> MaterialsCopy;
-            public NativeArray<GreedyMesher.MaskCell> Mask;
-            public NeighborDataBuffers Neighbors;
-
-            public void Dispose()
-            {
-                if (MaterialsCopy.IsCreated) MaterialsCopy.Dispose();
-                if (Mask.IsCreated) Mask.Dispose();
-                Neighbors.Dispose();
-                MeshData.Dispose();
-            }
-        }
-
-        struct FaceMeshTask
+        internal struct FaceMeshTask
         {
             public ChunkCoord Coord;
             public Chunk Chunk;
@@ -295,7 +303,7 @@ namespace TerraVoxel.Voxel.Streaming
             public int FaceMask;
         }
 
-        struct CachedChunkData
+        internal struct CachedChunkData
         {
             public NativeArray<ushort> Materials;
             public NativeArray<float> Density;
@@ -353,14 +361,14 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
-        struct CachedMeshEntry
+        internal struct CachedMeshEntry
         {
             public Mesh Mesh;
             public int RefCount;
             public int LastUsedFrame;
         }
 
-        struct PendingCachedMesh
+        internal struct PendingCachedMesh
         {
             public Mesh Mesh;
             public ulong Hash;
@@ -401,6 +409,8 @@ namespace TerraVoxel.Voxel.Streaming
 
         bool IsInIntegrationSet(ChunkCoord coord)
         {
+            if (_integration != null)
+                return _integration.IsInIntegrationSet(coord);
             lock (_integrationLock) return _integrationSet.Contains(coord);
         }
 
@@ -423,6 +433,11 @@ namespace TerraVoxel.Voxel.Streaming
 
         public void SetCollidersEnabled(bool enabled)
         {
+            if (_physics != null)
+            {
+                _physics.SetCollidersEnabled(enabled);
+                return;
+            }
             addColliders = enabled;
             foreach (var chunk in _active.Values)
             {
@@ -439,45 +454,7 @@ namespace TerraVoxel.Voxel.Streaming
         /// <summary>Freezes/unfreezes player for safe spawn. Looks for PlayerSimpleController (by type name) and CharacterController; optional — no error if missing.</summary>
         void SetPlayerFrozen(bool frozen)
         {
-            if (player == null) return;
-            Behaviour controller = player.GetComponent("PlayerSimpleController") as Behaviour;
-            if (controller == null)
-            {
-                var behaviours = player.GetComponentsInChildren<Behaviour>(true);
-                for (int i = 0; i < behaviours.Length; i++)
-                {
-                    var b = behaviours[i];
-                    if (b != null && b.GetType().Name == "PlayerSimpleController")
-                    {
-                        controller = b;
-                        break;
-                    }
-                }
-            }
-            var cc = player.GetComponent<CharacterController>() ?? player.GetComponentInChildren<CharacterController>();
-
-            if (frozen)
-            {
-                if (_playerFrozenForSafeSpawn) return;
-                if (controller != null)
-                {
-                    _savedPlayerControllerEnabled = controller.enabled;
-                    controller.enabled = false;
-                }
-                if (cc != null)
-                {
-                    _savedCharacterControllerEnabled = cc.enabled;
-                    cc.enabled = false;
-                }
-                _playerFrozenForSafeSpawn = true;
-            }
-            else
-            {
-                if (!_playerFrozenForSafeSpawn) return;
-                if (controller != null) controller.enabled = _savedPlayerControllerEnabled;
-                if (cc != null) cc.enabled = _savedCharacterControllerEnabled;
-                _playerFrozenForSafeSpawn = false;
-            }
+            _safeSpawn?.SetPlayerFrozen(frozen);
         }
 
         void Awake()
@@ -494,6 +471,27 @@ namespace TerraVoxel.Voxel.Streaming
             if (svoManager == null) svoManager = GetComponent<SvoManager>();
             if (!_emptyMaterials.IsCreated)
                 _emptyMaterials = new NativeArray<ushort>(0, Allocator.Persistent);
+
+            _context = new Context(this);
+            _cache = new ChunkCacheManager(_context);
+            _jobs = new ChunkJobsManager(_context);
+            _integration = new ChunkIntegrationManager(_context);
+            _loader = new ChunkLoader(_context);
+            _lod = new ChunkLodManager(_context);
+            _adaptive = new ChunkAdaptiveLimitsManager(_context);
+            _workDrop = new ChunkWorkDropManager(_context);
+            _safeSpawn = new ChunkSafeSpawnManager(_context);
+            _physics = new ChunkPhysicsManager(_context);
+            _context.Cache = _cache;
+            _context.Jobs = _jobs;
+            _context.Integration = _integration;
+            _context.Loader = _loader;
+            _context.Lod = _lod;
+            _context.Adaptive = _adaptive;
+            _context.WorkDrop = _workDrop;
+            _context.SafeSpawn = _safeSpawn;
+            _context.Physics = _physics;
+
             InitAdaptiveLimits();
             if (srpBatchingConfig != null)
                 srpBatchingConfig.Configure();
@@ -512,37 +510,7 @@ namespace TerraVoxel.Voxel.Streaming
 
         void InitAdaptiveLimits()
         {
-            if (_adaptiveInitialized) return;
-            if (scaleJobsByProcessorCount)
-            {
-                int cores = Mathf.Max(1, SystemInfo.processorCount);
-                int perType = Mathf.Clamp(cores / 2, 2, 16);
-                _baseMaxGenJobsInFlight = perType;
-                _baseMaxMeshJobsInFlight = perType;
-                _baseMaxIntegrationsPerFrame = Mathf.Max(maxIntegrationsPerFrame, perType * 2);
-            }
-            else
-            {
-                _baseMaxGenJobsInFlight = maxGenJobsInFlight;
-                _baseMaxMeshJobsInFlight = maxMeshJobsInFlight;
-                _baseMaxIntegrationsPerFrame = maxIntegrationsPerFrame;
-            }
-            _baseMaxPreloadsPerFrame = maxPreloadsPerFrame;
-            _runtimeMaxGenJobsInFlight = _baseMaxGenJobsInFlight;
-            _runtimeMaxMeshJobsInFlight = _baseMaxMeshJobsInFlight;
-            _runtimeMaxIntegrationsPerFrame = _baseMaxIntegrationsPerFrame;
-            _runtimeMaxPreloadsPerFrame = _baseMaxPreloadsPerFrame;
-            _adaptiveInitialized = true;
-        }
-
-        void EnsurePrefab()
-        {
-            if (chunkPrefab == null)
-            {
-                var go = new GameObject("ChunkPrefab (auto)");
-                chunkPrefab = go.AddComponent<Chunk>();
-                go.SetActive(false);
-            }
+            _adaptive?.InitAdaptiveLimits();
         }
 
         void Update()
@@ -571,109 +539,66 @@ namespace TerraVoxel.Voxel.Streaming
             streamingBudget?.BeginFrame();
             _cacheOpsThisFrame = 0;
             UpdateAdaptiveLimits();
-            ProcessGenJobs();
-            ProcessMeshJobs();
-            ProcessIntegrationQueue();
+            if (_jobs != null) _jobs.ProcessGenJobs();
+            else ProcessGenJobs();
+            if (_jobs != null) _jobs.ProcessMeshJobs();
+            else ProcessMeshJobs();
+            if (_integration != null) _integration.ProcessIntegrationQueue();
             if (streamingPaused)
             {
                 if (enableEdgeOnlyRemesh)
                 {
-                    ProcessFaceMeshJobs();
-                    ProcessFaceRemeshQueue();
+                    if (_jobs != null) _jobs.ProcessFaceMeshJobs();
+                    else ProcessFaceMeshJobs();
+                    if (_jobs != null) _jobs.ProcessFaceRemeshQueue();
+                    else ProcessFaceRemeshQueue();
                 }
-                ProcessRemeshQueue();
+                if (_jobs != null) _jobs.ProcessRemeshQueue();
+                else ProcessRemeshQueue();
                 return;
             }
-            MaintainRadius();
-            ProcessPending();
-            ProcessPreload();
-            ProcessRemovalQueue();
+            if (_loader != null) _loader.MaintainRadius();
+            else MaintainRadius();
+            if (_loader != null) _loader.ProcessPending();
+            else ProcessPending();
+            if (_loader != null) _loader.ProcessPreload();
+            else ProcessPreload();
+            if (_loader != null) _loader.ProcessRemovalQueue();
+            else ProcessRemovalQueue();
             if (enableEdgeOnlyRemesh)
             {
-                ProcessFaceMeshJobs();
-                ProcessFaceRemeshQueue();
+                if (_jobs != null) _jobs.ProcessFaceMeshJobs();
+                else ProcessFaceMeshJobs();
+                if (_jobs != null) _jobs.ProcessFaceRemeshQueue();
+                else ProcessFaceRemeshQueue();
             }
-            ProcessRemeshQueue();
+            if (_jobs != null) _jobs.ProcessRemeshQueue();
+            else ProcessRemeshQueue();
             if (enableFullLod)
-                ProcessFullLod();
+            {
+                if (_lod != null) _lod.ProcessFullLod();
+            }
             else
-                ProcessLodUpgrades();
+            {
+                if (_lod != null) _lod.ProcessLodUpgrades();
+            }
             if (enableFarRangeLod)
-                ProcessFarRangeLod();
+            {
+                if (_lod != null) _lod.ProcessFarRangeLod();
+                else ProcessFarRangeLod();
+            }
             if (occlusionCuller != null)
                 occlusionCuller.Tick(this);
-            if (physicsOptimizer != null)
+            if (_physics != null)
+                _physics.Tick();
+            else if (physicsOptimizer != null)
                 physicsOptimizer.Tick(this);
         }
 
         /// <summary>Resets limits to base each frame; reduces them if over gen/mesh/integration/memory/GPU threshold. Limits recover when not throttled (cooldown expires).</summary>
         void UpdateAdaptiveLimits()
         {
-            if (!enableAdaptiveLimits)
-            {
-                _runtimeMaxGenJobsInFlight = maxGenJobsInFlight;
-                _runtimeMaxMeshJobsInFlight = maxMeshJobsInFlight;
-                _runtimeMaxIntegrationsPerFrame = maxIntegrationsPerFrame;
-                _runtimeMaxPreloadsPerFrame = maxPreloadsPerFrame;
-                return;
-            }
-
-            InitAdaptiveLimits();
-            double now = Time.realtimeSinceStartupAsDouble;
-            if (now < _adaptiveUntil)
-                return;
-
-            _runtimeMaxGenJobsInFlight = _baseMaxGenJobsInFlight;
-            _runtimeMaxMeshJobsInFlight = _baseMaxMeshJobsInFlight;
-            _runtimeMaxIntegrationsPerFrame = _baseMaxIntegrationsPerFrame;
-            _runtimeMaxPreloadsPerFrame = _baseMaxPreloadsPerFrame;
-
-            bool throttled = false;
-            if (genSlowMs > 0 && _lastGenMs > genSlowMs)
-            {
-                _runtimeMaxGenJobsInFlight = Mathf.Max(1, _baseMaxGenJobsInFlight / 2);
-                throttled = true;
-            }
-            if (meshSlowMs > 0 && _lastMeshMs > meshSlowMs)
-            {
-                _runtimeMaxMeshJobsInFlight = Mathf.Max(1, _baseMaxMeshJobsInFlight / 2);
-                throttled = true;
-            }
-            if (integrationSlowMs > 0 && _lastIntegrationMs > integrationSlowMs)
-            {
-                _runtimeMaxIntegrationsPerFrame = Mathf.Max(1, _baseMaxIntegrationsPerFrame / 2);
-                _runtimeMaxPreloadsPerFrame = 0;
-                throttled = true;
-            }
-
-            if (memoryPressureThresholdMb > 0)
-            {
-#if UNITY_EDITOR || true
-                long memMb = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / (1024 * 1024);
-                if (memMb > memoryPressureThresholdMb)
-                {
-                    _runtimeMaxGenJobsInFlight = Mathf.Max(1, _baseMaxGenJobsInFlight / 2);
-                    _runtimeMaxMeshJobsInFlight = Mathf.Max(1, _baseMaxMeshJobsInFlight / 2);
-                    _runtimeMaxIntegrationsPerFrame = Mathf.Max(1, _baseMaxIntegrationsPerFrame / 2);
-                    throttled = true;
-                }
-#endif
-            }
-
-            if (graphicsMemoryThresholdMb > 0 && SystemInfo.graphicsMemorySize > 0)
-            {
-                long gpuMb = SystemInfo.graphicsMemorySize;
-                if (gpuMb > graphicsMemoryThresholdMb)
-                {
-                    _runtimeMaxMeshJobsInFlight = Mathf.Max(1, _baseMaxMeshJobsInFlight / 2);
-                    _runtimeMaxIntegrationsPerFrame = Mathf.Max(1, _baseMaxIntegrationsPerFrame / 2);
-                    throttled = true;
-                }
-            }
-
-            if (throttled && adaptiveCooldown > 0f)
-                _adaptiveUntil = now + adaptiveCooldown;
-            // Limits recover next frame: base values are reapplied at start of UpdateAdaptiveLimits, then reduced only if over threshold.
+            _adaptive?.UpdateAdaptiveLimits();
         }
 
         int EffectiveUnloadRadius()
@@ -695,109 +620,55 @@ namespace TerraVoxel.Voxel.Streaming
         /// <summary>When player moved far (workDropDistance) or view angle changed (workDropAngleDeg) or move vs view (workDropMoveAngleDeg), drops queues after cooldown.</summary>
         void MaybeDropWork(ChunkCoord center)
         {
-            if (workDropDistance <= 0 && workDropAngleDeg <= 0f)
-            {
-                _lastDropCenter = center;
-                _hasDropCenter = true;
-                _lastDropForward = ResolveViewForward();
-                _hasDropForward = true;
-                return;
-            }
-
-            bool drop = false;
-            if (_hasDropCenter && workDropDistance > 0)
-            {
-                int dx = Mathf.Abs(center.X - _lastDropCenter.X);
-                int dz = Mathf.Abs(center.Z - _lastDropCenter.Z);
-                if (dx > workDropDistance || dz > workDropDistance)
-                    drop = true;
-            }
-
-            Vector3 forward = ResolveViewForward();
-            if (_hasDropForward && workDropAngleDeg > 0f)
-            {
-                float angle = Vector3.Angle(_lastDropForward, forward);
-                if (angle >= workDropAngleDeg)
-                    drop = true;
-            }
-
-            if (!drop && _hasDropCenter && workDropMoveAngleDeg > 0f)
-            {
-                Vector3 move = new Vector3(center.X - _lastDropCenter.X, 0f, center.Z - _lastDropCenter.Z);
-                if (move.sqrMagnitude > 0.0001f)
-                {
-                    move.Normalize();
-                    float moveAngle = Vector3.Angle(forward, move);
-                    if (moveAngle >= workDropMoveAngleDeg)
-                        drop = true;
-                }
-            }
-
-            if (drop)
-            {
-                double now = Time.realtimeSinceStartupAsDouble;
-                if (workDropCooldown <= 0f || now - _lastDropTime >= workDropCooldown)
-                {
-                    _lastDropTime = now;
-                    _streamingEpoch++;
-                    DropWorkQueues(center);
-                }
-            }
-
-            _lastDropCenter = center;
-            _hasDropCenter = true;
-            if (forward.sqrMagnitude > 0.0001f)
-            {
-                _lastDropForward = forward;
-                _hasDropForward = true;
-            }
+            _workDrop?.MaybeDropWork(center);
         }
 
         Vector3 ResolveViewForward()
         {
-            Vector3 forward = Vector3.forward;
-            if (Camera.main != null)
-                forward = Camera.main.transform.forward;
-            else if (player != null)
-                forward = player.forward;
-
-            forward.y = 0f;
-            if (forward.sqrMagnitude < 0.0001f)
-                forward = Vector3.forward;
-            else
-                forward.Normalize();
-            return forward;
+            return _workDrop != null ? _workDrop.ResolveViewForward() : Vector3.forward;
         }
 
         /// <summary>Clears or filters pending/preload/remove/integration queues; keeps only in-range remesh/mesh jobs and in-range pending/preload coords. MaintainRadius may still repopulate pending.</summary>
         void DropWorkQueues(ChunkCoord center)
         {
+            if (_workDrop != null)
+            {
+                _workDrop.DropWorkQueues(center);
+                return;
+            }
             int keepRadius = EffectiveUnloadRadius();
             if (enablePreload)
                 keepRadius = Mathf.Max(keepRadius, EffectivePreloadRadius());
 
-            var pendingKeep = new List<ChunkCoord>();
+            _dropPendingKeep.Clear();
+            _dropPreloadKeep.Clear();
+            _dropRemeshKeep.Clear();
+            _dropFaceRemeshKeep.Clear();
+            _dropFaceMeshStale.Clear();
+            _dropStale.Clear();
+            _dropCachedStale.Clear();
+            _dropRemeshAfter.Clear();
+
             foreach (var coord in _pendingSet)
             {
                 if (IsWithinLoadRadius(coord, center, loadRadius))
-                    pendingKeep.Add(coord);
+                    _dropPendingKeep.Add(coord);
             }
             _pending.Clear();
             _pendingSet.Clear();
-            for (int i = 0; i < pendingKeep.Count; i++)
-                _pendingSet.Add(pendingKeep[i]);
+            for (int i = 0; i < _dropPendingKeep.Count; i++)
+                _pendingSet.Add(_dropPendingKeep[i]);
 
-            var preloadKeep = new List<ChunkCoord>();
             foreach (var coord in _preloadSet)
             {
                 if (IsWithinLoadRadius(coord, center, EffectivePreloadRadius()))
-                    preloadKeep.Add(coord);
+                    _dropPreloadKeep.Add(coord);
             }
             _preload.Clear();
             _preloadSet.Clear();
-            for (int i = 0; i < preloadKeep.Count; i++)
+            for (int i = 0; i < _dropPreloadKeep.Count; i++)
             {
-                var c = preloadKeep[i];
+                var c = _dropPreloadKeep[i];
                 _preloadSet.Add(c);
                 _preload.Enqueue(c);
             }
@@ -806,23 +677,21 @@ namespace TerraVoxel.Voxel.Streaming
             _integrationQueue.Clear();
             lock (_integrationLock) { _integrationSet.Clear(); }
 
-            var remeshKeep = new List<ChunkCoord>();
             foreach (var coord in _remeshSet)
             {
                 if (_active.ContainsKey(coord) && IsWithinKeepRadius(coord, center, keepRadius))
-                    remeshKeep.Add(coord);
+                    _dropRemeshKeep.Add(coord);
             }
             _remeshSet.Clear();
-            for (int i = 0; i < remeshKeep.Count; i++)
-                _remeshSet.Add(remeshKeep[i]);
+            for (int i = 0; i < _dropRemeshKeep.Count; i++)
+                _remeshSet.Add(_dropRemeshKeep[i]);
 
-            var faceRemeshKeep = new List<(ChunkCoord coord, int mask)>();
             foreach (var coord in _faceRemeshSet)
             {
                 if (_active.ContainsKey(coord) && IsWithinKeepRadius(coord, center, keepRadius))
                 {
                     int mask = _neighborDirtyFaces.TryGetValue(coord, out int m) ? m : 0;
-                    faceRemeshKeep.Add((coord, mask));
+                    _dropFaceRemeshKeep.Add((coord, mask));
                 }
                 else
                 {
@@ -832,15 +701,14 @@ namespace TerraVoxel.Voxel.Streaming
             _faceRemeshQueue.Clear();
             _faceRemeshSet.Clear();
             _neighborDirtyFaces.Clear();
-            for (int i = 0; i < faceRemeshKeep.Count; i++)
+            for (int i = 0; i < _dropFaceRemeshKeep.Count; i++)
             {
-                var (c, mask) = faceRemeshKeep[i];
+                var (c, mask) = _dropFaceRemeshKeep[i];
                 _neighborDirtyFaces[c] = mask;
                 _faceRemeshSet.Add(c);
                 _faceRemeshQueue.Enqueue(c);
             }
 
-            var faceMeshStale = new List<ChunkCoord>();
             foreach (var kvp in _faceMeshJobs)
             {
                 var coord = kvp.Key;
@@ -848,20 +716,19 @@ namespace TerraVoxel.Voxel.Streaming
                 {
                     kvp.Value.Job.Handle.Complete();
                     kvp.Value.Job.Dispose();
-                    faceMeshStale.Add(coord);
+                    _dropFaceMeshStale.Add(coord);
                 }
             }
-            for (int i = 0; i < faceMeshStale.Count; i++)
-                _faceMeshJobs.Remove(faceMeshStale[i]);
+            for (int i = 0; i < _dropFaceMeshStale.Count; i++)
+                _faceMeshJobs.Remove(_dropFaceMeshStale[i]);
 
-            var stale = new List<ChunkCoord>();
             foreach (var kvp in _pendingMeshJobs)
             {
                 var coord = kvp.Key;
                 if (!_active.ContainsKey(coord) || !IsWithinKeepRadius(coord, center, keepRadius))
                 {
                     kvp.Value.Dispose();
-                    stale.Add(coord);
+                    _dropStale.Add(coord);
                 }
                 else
                 {
@@ -875,16 +742,15 @@ namespace TerraVoxel.Voxel.Streaming
                     }
                 }
             }
-            for (int i = 0; i < stale.Count; i++)
-                _pendingMeshJobs.Remove(stale[i]);
+            for (int i = 0; i < _dropStale.Count; i++)
+                _pendingMeshJobs.Remove(_dropStale[i]);
 
-            var cachedStale = new List<ChunkCoord>();
             foreach (var kvp in _pendingCachedMeshes)
             {
                 var coord = kvp.Key;
                 if (!_active.ContainsKey(coord) || !IsWithinKeepRadius(coord, center, keepRadius))
                 {
-                    cachedStale.Add(coord);
+                    _dropCachedStale.Add(coord);
                 }
                 else
                 {
@@ -898,45 +764,20 @@ namespace TerraVoxel.Voxel.Streaming
                     }
                 }
             }
-            for (int i = 0; i < cachedStale.Count; i++)
-                _pendingCachedMeshes.Remove(cachedStale[i]);
+            for (int i = 0; i < _dropCachedStale.Count; i++)
+                _pendingCachedMeshes.Remove(_dropCachedStale[i]);
 
-            var remeshAfter = new List<ChunkCoord>();
             foreach (var coord in _remeshAfterIntegration)
             {
                 if (_active.ContainsKey(coord) && IsWithinKeepRadius(coord, center, keepRadius))
-                    remeshAfter.Add(coord);
+                    _dropRemeshAfter.Add(coord);
             }
             _remeshAfterIntegration.Clear();
-            for (int i = 0; i < remeshAfter.Count; i++)
-                _remeshAfterIntegration.Add(remeshAfter[i]);
+            for (int i = 0; i < _dropRemeshAfter.Count; i++)
+                _remeshAfterIntegration.Add(_dropRemeshAfter[i]);
         }
 
         /// <summary>Activates a preloaded chunk (renderer/collider). Handles chunk/mesh null; queues remesh if mesh missing or low-LOD.</summary>
-        void ActivatePreloadedChunk(ChunkCoord coord, Chunk chunk)
-        {
-            if (!_preloaded.Remove(coord)) return;
-            if (chunk == null) return;
-            chunk.SetRendererEnabled(true);
-            if (addColliders)
-                chunk.SetColliderEnabled(true);
-
-            Mesh mesh = chunk.GetRenderMesh();
-            if (mesh == null || mesh.vertexCount == 0)
-            {
-                QueueRemesh(coord);
-                return;
-            }
-            
-            // Force remesh if chunk has low-LOD mesh when activating (fixes "cubes that don't transform back")
-            if (chunk.IsLowLod || (enableReverseLod && reverseLodStep > 1))
-            {
-                chunk.IsLowLod = false;
-                chunk.LodStartTime = 0;
-                QueueRemesh(coord);
-            }
-        }
-
         void OnDestroy()
         {
             CompleteAllJobs();
@@ -1001,2420 +842,32 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
-        void CompleteAllJobs()
-        {
-            foreach (var kvp in _genJobs)
-            {
-                var job = kvp.Value.Job;
-                job.Handle.Complete();
-                job.Dispose();
-            }
-            foreach (var kvp in _meshJobs)
-            {
-                var job = kvp.Value.Job;
-                job.Handle.Complete();
-                job.Dispose();
-            }
-            foreach (var kvp in _faceMeshJobs)
-            {
-                kvp.Value.Job.Handle.Complete();
-                kvp.Value.Job.Dispose();
-            }
-            _genJobs.Clear();
-            _meshJobs.Clear();
-            _faceMeshJobs.Clear();
-            _genCompleted.Clear();
-            _meshCompleted.Clear();
-        }
-
-        void MaintainRadius()
-        {
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-            MaybeDropWork(center);
-            if (ShouldRebuildPending(center))
-                RebuildPendingQueue(center);
-            int effectivePreloadRadius = EffectivePreloadRadius();
-
-            for (int dz = -loadRadius; dz <= loadRadius; dz++)
-            {
-                for (int dx = -loadRadius; dx <= loadRadius; dx++)
-                {
-                    for (int dy = 0; dy < worldGen.ColumnChunks; dy++)
-                    {
-                        var coord = new ChunkCoord(center.X + dx, dy, center.Z + dz);
-                        if (_active.TryGetValue(coord, out var existing))
-                        {
-                            if (_preloaded.Contains(coord))
-                                ActivatePreloadedChunk(coord, existing);
-                            continue;
-                        }
-                        if (_pendingSet.Contains(coord)) continue;
-                        if (pendingQueueCap > 0 && PendingCount >= pendingQueueCap)
-                            DropOnePendingOldest(center);
-                        if (viewCone != null && viewCone.Enabled)
-                        {
-                            // Track membership to avoid duplicate enqueues
-                            if (_pendingSet.Add(coord))
-                                viewCone.EnqueueWithPriority(coord, center, player);
-                        }
-                        else
-                        {
-                            _pendingSet.Add(coord);
-                        }
-                    }
-                }
-            }
-
-            if (enablePreload && effectivePreloadRadius > loadRadius)
-            {
-                for (int dz = -effectivePreloadRadius; dz <= effectivePreloadRadius; dz++)
-                {
-                    for (int dx = -effectivePreloadRadius; dx <= effectivePreloadRadius; dx++)
-                    {
-                        if (Mathf.Abs(dx) <= loadRadius && Mathf.Abs(dz) <= loadRadius) continue;
-                        for (int dy = 0; dy < worldGen.ColumnChunks; dy++)
-                        {
-                            var coord = new ChunkCoord(center.X + dx, dy, center.Z + dz);
-                            if (_active.ContainsKey(coord)) continue;
-                            if (_pendingSet.Contains(coord)) continue;
-                            if (_preloadSet.Contains(coord)) continue;
-                            _preload.Enqueue(coord);
-                            _preloadSet.Add(coord);
-                        }
-                    }
-                }
-            }
-
-            int keepRadius = EffectiveUnloadRadius();
-            if (enablePreload)
-                keepRadius = Mathf.Max(keepRadius, effectivePreloadRadius);
-
-            _removeCandidates.Clear();
-            foreach (var kvp in _active)
-            {
-                if (IsWithinKeepRadius(kvp.Key, center, keepRadius)) continue;
-                int dx = kvp.Key.X - center.X;
-                int dy = kvp.Key.Y - center.Y;
-                int dz = kvp.Key.Z - center.Z;
-                int dist = dx * dx + dy * dy + dz * dz;
-                _removeCandidates.Add(new RemoveCandidate(kvp.Key, dist));
-            }
-
-            _removeCandidates.Sort((a, b) => b.Distance.CompareTo(a.Distance));
-            foreach (var c in _removeCandidates)
-                QueueRemoval(c.Coord);
-
-            if (enableFarRangeLod && farRangeRadius > keepRadius)
-            {
-                int farR = Mathf.Min(farRangeRadius, 32);
-                for (int dz = -farR; dz <= farR; dz++)
-                for (int dx = -farR; dx <= farR; dx++)
-                {
-                    int dist = dx * dx + dz * dz;
-                    if (dist <= keepRadius * keepRadius) continue;
-                    if (dist > farR * farR) continue;
-                    for (int dy = 0; dy < worldGen.ColumnChunks; dy++)
-                    {
-                        var coord = new ChunkCoord(center.X + dx, dy, center.Z + dz);
-                        if (_active.ContainsKey(coord)) continue;
-                        if (_farRangeRenderSet.Add(coord))
-                            _farRangeRenderQueue.Enqueue(coord);
-                    }
-                }
-            }
-        }
-
-        /// <summary>Stub: render-only chunks beyond unloadRadius with low LOD/SVO not yet implemented. Queue capped to avoid unbounded growth.</summary>
-        void ProcessFarRangeLod()
-        {
-            const int farRangeQueueCap = 1024;
-            while (_farRangeRenderQueue.Count > farRangeQueueCap)
-            {
-                var coord = _farRangeRenderQueue.Dequeue();
-                _farRangeRenderSet.Remove(coord);
-            }
-        }
-
-        void ProcessPending()
-        {
-            if (player == null || worldGen == null) return;
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-
-            int spawned = 0;
-            while (PendingCount > 0 && spawned < maxSpawnsPerFrame)
-            {
-                if (BudgetExceeded()) break;
-                if (_genJobs.Count >= CurrentMaxGenJobsInFlight) break;
-                if (!TryDequeuePending(center, out var coord))
-                    break;
-                if (!IsWithinLoadRadius(coord, center, loadRadius)) continue;
-                if (_active.ContainsKey(coord)) continue;
-                // Work dropping: skip spawning out-of-view-cone chunks (they get re-queued by MaintainRadius)
-                if (viewCone != null && viewCone.Enabled && workDropAngleDeg > 0f && !viewCone.IsInViewCone(coord, center, player))
-                    continue;
-                SpawnChunk(coord);
-                spawned++;
-            }
-            _spawnedLastFrame = spawned;
-        }
-
-        void ProcessPreload()
-        {
-            if (!enablePreload) return;
-            if (player == null || worldGen == null) return;
-            if (_preload.Count == 0) return;
-            if (BudgetExceeded()) return;
-
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-            int effectivePreloadRadius = EffectivePreloadRadius();
-
-            int spawned = 0;
-            while (_preload.Count > 0 && spawned < CurrentMaxPreloadsPerFrame)
-            {
-                if (BudgetExceeded()) break;
-                if (_genJobs.Count >= CurrentMaxGenJobsInFlight) break;
-                var coord = _preload.Dequeue();
-                _preloadSet.Remove(coord);
-
-                if (!IsWithinLoadRadius(coord, center, effectivePreloadRadius)) continue;
-                if (IsWithinLoadRadius(coord, center, loadRadius))
-                {
-                    if (!_active.ContainsKey(coord) && !_pendingSet.Contains(coord))
-                    {
-                        if (viewCone != null && viewCone.Enabled)
-                        {
-                            if (_pendingSet.Add(coord))
-                                viewCone.EnqueueWithPriority(coord, center, player);
-                        }
-                        else
-                        {
-                            _pendingSet.Add(coord);
-                        }
-                    }
-                    continue;
-                }
-                if (_active.ContainsKey(coord)) continue;
-
-                SpawnChunk(coord, preload: true);
-                spawned++;
-            }
-        }
-
-        /// <summary>Completes finished gen jobs on main thread; applies safe spawn, delta, schedules mesh. Exceptions in Complete() or subsequent logic are not caught.</summary>
-        void ProcessGenJobs()
-        {
-            if (_genJobs.Count == 0) return;
-            _genCompleted.Clear();
-            foreach (var kvp in _genJobs)
-            {
-                if (kvp.Value.Job.Handle.IsCompleted)
-                    _genCompleted.Add(kvp.Key);
-            }
-
-            ChunkCoord center = default;
-            int keepRadius = 0;
-            bool hasCenter = player != null && worldGen != null;
-            if (hasCenter)
-            {
-                center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-                keepRadius = EffectiveUnloadRadius();
-                if (enablePreload)
-                    keepRadius = Mathf.Max(keepRadius, EffectivePreloadRadius());
-            }
-
-            foreach (var coord in _genCompleted)
-            {
-                if (!_genJobs.TryGetValue(coord, out var task)) continue;
-                if (task.Epoch != _streamingEpoch && hasCenter && !IsWithinKeepRadius(coord, center, keepRadius))
-                {
-                    task.Job.Handle.Complete();
-                    task.Job.Dispose();
-                    _genJobs.Remove(coord);
-                    if (_active.ContainsKey(coord))
-                        QueueRemoval(coord);
-                    continue;
-                }
-                task.Job.Handle.Complete();
-                task.Job.Dispose();
-
-                if (task.UseSlices && task.SliceIndex + 1 < task.SliceCount)
-                {
-                    if (_generator != null && worldGen != null && task.Chunk != null && task.Chunk.Data.IsCreated)
-                    {
-                        int nextIndex = task.SliceIndex + 1;
-                        int startIndex = nextIndex * task.SliceSize;
-                        int total = task.Chunk.Data.Materials.Length;
-                        int count = Mathf.Min(task.SliceSize, total - startIndex);
-                        if (count > 0)
-                        {
-                            var handle = _generator.Schedule(task.Chunk.Data, coord, worldGen, noiseStack, out var layers, startIndex, count);
-                            task.Job = new ChunkGenJobHandle
-                            {
-                                Handle = handle,
-                                Layers = layers
-                            };
-                            task.SliceIndex = nextIndex;
-                            _genJobs[coord] = task;
-                            continue;
-                        }
-                    }
-                }
-
-                _genJobs.Remove(coord);
-
-                if (!_active.TryGetValue(coord, out var chunk) || chunk != task.Chunk)
-                    continue;
-
-                _lastGenMs = (long)((Time.realtimeSinceStartupAsDouble - task.StartTime) * 1000.0);
-
-                bool appliedSafeSpawn = false;
-                if (task.ApplySafeSpawn)
-                    appliedSafeSpawn = ApplySafeSpawnToChunk(chunk, coord);
-
-                if (hybridSave != null && task.ApplyDelta)
-                {
-                    hybridSave.ApplyDeltaIfAny(coord, chunk.Data);
-                    if (modManager != null && modManager.GetDeltaCount(coord) > 0)
-                        modManager.ApplyModsToChunk(coord, chunk.Data);
-                }
-                else if (hybridSave == null && modManager != null)
-                {
-                    modManager.ApplyModsToChunk(coord, chunk.Data);
-                }
-
-                if (appliedSafeSpawn && _pendingSafeSpawnSnap)
-                {
-                    SnapPlayerToSafeSpawn();
-                    _pendingSafeSpawnSnap = false;
-                }
-
-                // Initial LOD before first mesh: pick target by distance to avoid spawning LOD0 everywhere.
-                if (initialLodFromDistance && lodSettings != null && player != null && worldGen != null)
-                {
-                    ChunkCoord lodCenter = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-                    int dx = Mathf.Abs(coord.X - lodCenter.X);
-                    int dz = Mathf.Abs(coord.Z - lodCenter.Z);
-                    int dist = Mathf.Max(dx, dz);
-                    var desired = lodSettings.ResolveLevel(dist, 1, ChunkLodMode.Mesh);
-
-                    if (desired.Mode == ChunkLodMode.None)
-                    {
-                        chunk.SetRendererEnabled(false);
-                        chunk.SetColliderEnabled(false);
-                        chunk.UsesSvo = false;
-                        chunk.IsLowLod = true;
-                        chunk.LodStep = Mathf.Max(1, desired.LodStep);
-                        chunk.LodStartTime = Time.realtimeSinceStartupAsDouble;
-                    }
-                    else if (desired.Mode == ChunkLodMode.Svo && svoManager != null)
-                    {
-                        GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
-                        if (svoManager.TryGetOrBuildMesh(coord, chunk.Data, Mathf.Max(1, desired.LodStep), maxMaterialIndex, fallbackMaterialIndex, out var svoMesh))
-                        {
-                            chunk.ApplySharedMesh(svoMesh, addCollider: false);
-                            if (srpBatchingConfig != null) srpBatchingConfig.ApplyToChunk(chunk);
-                            else if (voxelMaterial != null) chunk.SetSharedMaterial(voxelMaterial);
-                            chunk.UsesSvo = true;
-                            chunk.LodStep = desired.LodStep;
-                            chunk.IsLowLod = true;
-                            chunk.LodStartTime = Time.realtimeSinceStartupAsDouble;
-                        }
-                        else
-                            ScheduleMeshForChunk(coord, task.SpawnStart, Mathf.Max(1, desired.LodStep));
-                    }
-                    else
-                    {
-                        int lodStep = Mathf.Max(1, desired.LodStep);
-                        if (!ScheduleMeshForChunk(coord, task.SpawnStart, lodStep))
-                            QueueRemesh(coord);
-                    }
-                }
-                else
-                {
-                    if (!ScheduleMeshForChunk(coord, task.SpawnStart, GetInitialLodStep(coord)))
-                        QueueRemesh(coord);
-                }
-            }
-        }
-
-        /// <summary>Completes finished mesh jobs on main thread; queues integration. Exceptions in Complete() or subsequent logic are not caught.</summary>
-        void ProcessMeshJobs()
-        {
-            if (_meshJobs.Count == 0) return;
-            _meshCompleted.Clear();
-            foreach (var kvp in _meshJobs)
-            {
-                if (kvp.Value.Job.Handle.IsCompleted)
-                    _meshCompleted.Add(kvp.Key);
-            }
-
-            ChunkCoord center = default;
-            int keepRadius = 0;
-            bool hasCenter = player != null && worldGen != null;
-            if (hasCenter)
-            {
-                center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-                keepRadius = EffectiveUnloadRadius();
-                if (enablePreload)
-                    keepRadius = Mathf.Max(keepRadius, EffectivePreloadRadius());
-            }
-
-            foreach (var coord in _meshCompleted)
-            {
-                if (!_meshJobs.TryGetValue(coord, out var task)) continue;
-                if (task.Job.Epoch != _streamingEpoch && hasCenter && !IsWithinKeepRadius(coord, center, keepRadius))
-                {
-                    task.Job.Handle.Complete();
-                    task.Job.Dispose();
-                    _meshJobs.Remove(coord);
-                    if (_active.ContainsKey(coord))
-                        QueueRemoval(coord);
-                    continue;
-                }
-                task.Job.Handle.Complete();
-                _meshJobs.Remove(coord);
-
-                if (!_active.TryGetValue(coord, out var chunk) || chunk != task.Chunk)
-                {
-                    task.Job.Dispose();
-                    continue;
-                }
-
-                if (worldGen != null && worldGen.EnableSafeSpawn && worldGen.SafeSpawnRevalidate && _safeSpawnInitialized)
-                {
-                    if (ReapplySafeSpawnToChunk(chunk, coord, out var changed) && changed)
-                    {
-                        task.Job.Dispose();
-                        RequestRemesh(coord, includeNeighbors: true);
-                        continue;
-                    }
-                }
-
-                lock (_integrationLock)
-                {
-                    if (!_integrationSet.Contains(coord))
-                    {
-                        _pendingMeshJobs[coord] = task.Job;
-                        _integrationQueue.Enqueue(coord);
-                        _integrationSet.Add(coord);
-                    }
-                    else
-                    {
-                        if (_pendingMeshJobs.TryGetValue(coord, out var oldJob))
-                            oldJob.Dispose();
-                        _pendingMeshJobs[coord] = task.Job;
-                    }
-                }
-
-                _lastMeshMs = (long)((Time.realtimeSinceStartupAsDouble - task.StartTime) * 1000.0);
-                _lastTotalMs = task.SpawnStart > 0
-                    ? (long)((Time.realtimeSinceStartupAsDouble - task.SpawnStart) * 1000.0)
-                    : _lastMeshMs;
-                _lastSpawnCoord = coord;
-            }
-        }
-
-        void ProcessIntegrationQueue()
-        {
-            int integrationsThisFrame = 0;
-            ChunkCoord center = default;
-            int keepRadius = 0;
-            bool hasCenter = player != null && worldGen != null;
-            if (hasCenter)
-            {
-                center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-                keepRadius = EffectiveUnloadRadius();
-                if (enablePreload)
-                    keepRadius = Mathf.Max(keepRadius, EffectivePreloadRadius());
-            }
-
-            // Dynamic limit: if queue is very large, process more per frame to catch up
-            int integrationLimit = CurrentMaxIntegrationsPerFrame;
-            if (dynamicIntegrationLimit && _integrationQueue.Count > maxIntegrationQueueSize * 0.5f)
-            {
-                // Process more aggressively when queue is large, but keep cap to avoid long frames
-                integrationLimit = Mathf.Min(CurrentMaxIntegrationsPerFrame * 2, _integrationQueue.Count / 10);
-            }
-            integrationLimit = Mathf.Min(integrationLimit, 64);
-
-            // Clean up stale entries while processing (skip them instead of rebuilding queue)
-            int processed = 0;
-            int maxIterations = Mathf.Min(_integrationQueue.Count, integrationLimit * 2); // Prevent long frames
-
-            while (_integrationQueue.Count > 0 && integrationsThisFrame < integrationLimit && processed < maxIterations)
-            {
-                if (streamingBudget != null && streamingBudget.IsExceeded())
-                    break;
-
-                processed++;
-                ChunkCoord coord;
-                lock (_integrationLock)
-                {
-                    if (_integrationQueue.Count == 0) break;
-                    coord = _integrationQueue.Dequeue();
-                    _integrationSet.Remove(coord);
-                }
-
-                // Skip stale entries (no longer active or out of range)
-                if (!_active.TryGetValue(coord, out var chunk))
-                {
-                    // Чанк видалено: dispose job
-                    if (_pendingMeshJobs.TryGetValue(coord, out var job))
-                    {
-                        job.Dispose();
-                        _pendingMeshJobs.Remove(coord);
-                    }
-                    _pendingCachedMeshes.Remove(coord);
-                    continue;
-                }
-                if (hasCenter && !IsWithinKeepRadius(coord, center, keepRadius))
-                {
-                    // Out of range: dispose job
-                    if (_pendingMeshJobs.TryGetValue(coord, out var job))
-                    {
-                        job.Dispose();
-                        _pendingMeshJobs.Remove(coord);
-                    }
-                    _pendingCachedMeshes.Remove(coord);
-                    continue;
-                }
-
-                if (_pendingCachedMeshes.TryGetValue(coord, out var cachedMesh))
-                {
-                    if (cachedMesh.Epoch != _streamingEpoch)
-                    {
-                        _pendingCachedMeshes.Remove(coord);
-                        QueueRemesh(coord);
-                        continue;
-                    }
-
-                    // Validate cached mesh before applying
-                    if (cachedMesh.Mesh == null || cachedMesh.Mesh.vertexCount == 0)
-                    {
-                        _pendingCachedMeshes.Remove(coord);
-                        if (HasAnySolid(chunk.Data))
-                        {
-                            // Invalid mesh for non-empty chunk - queue remesh
-                            QueueRemesh(coord);
-                        }
-                        else
-                        {
-                            // Empty chunk is valid: keep renderer/collider disabled
-                            chunk.SetRendererEnabled(false);
-                            chunk.SetColliderEnabled(false);
-                        }
-                        continue;
-                    }
-                    
-                    // Re-validate hash matches current chunk data
-                    // If neighbors changed, hash might be stale
-                    var currentNeighbors = GatherNeighborCopies(coord);
-                    bool hashStillValid = false;
-                    if (HasAllNeighbors(currentNeighbors.Data))
-                    {
-                        ulong currentHash = ComputeMeshCacheHash(chunk.Data.Materials, chunk.Data.Size, currentNeighbors, chunk.LodStep, chunk.Data.Density);
-                        hashStillValid = (currentHash == cachedMesh.Hash);
-                    }
-                    currentNeighbors.Dispose();
-                    
-                    if (!hashStillValid)
-                    {
-                        // Hash mismatch - neighbors or materials changed, need remesh
-                        _pendingCachedMeshes.Remove(coord);
-                        QueueRemesh(coord);
-                        continue;
-                    }
-
-                    bool cachedApplyCollider = addColliders && !_preloaded.Contains(coord);
-                    double cachedIntegrationStart = Time.realtimeSinceStartupAsDouble;
-                    chunk.ApplySharedMesh(cachedMesh.Mesh, cachedApplyCollider);
-                    _lastIntegrationMs = (long)((Time.realtimeSinceStartupAsDouble - cachedIntegrationStart) * 1000.0);
-
-                    if (enableEdgeOnlyRemesh)
-                        ReleaseFaceCacheForChunk(coord);
-                    RegisterMeshCacheForChunk(coord, cachedMesh.Hash, cachedMesh.Mesh, markShared: false, addCollider: cachedApplyCollider);
-                    _pendingCachedMeshes.Remove(coord);
-                    chunk.IsLowLod = false;
-                    chunk.LodStartTime = 0;
-                    chunk.LodStep = 1;
-                    chunk.UsesSvo = false;
-
-                    // Ensure renderer is enabled for non-preloaded chunks with valid mesh
-                    if (!_preloaded.Contains(coord) && cachedMesh.Mesh != null && cachedMesh.Mesh.vertexCount > 0)
-                    {
-                        chunk.SetRendererEnabled(true);
-                    }
-
-                    if (_preloaded.Contains(coord))
-                    {
-                        chunk.SetRendererEnabled(false);
-                        chunk.SetColliderEnabled(false);
-                    }
-
-                    if (_meshedOnce.Add(coord))
-                        RebuildNeighbors(coord);
-
-                    if (_waitingSafeSpawnMesh && coord.Equals(_safeSpawnAnchorCoord))
-                    {
-                        SnapPlayerToSafeSpawn();
-                        SetPlayerFrozen(false);
-                        _waitingSafeSpawnMesh = false;
-                    }
-
-                    if (_remeshAfterIntegration.Remove(coord))
-                        QueueRemesh(coord);
-
-                    integrationsThisFrame++;
-                    continue;
-                }
-
-                if (!_pendingMeshJobs.TryGetValue(coord, out var meshJob))
-                {
-                    continue; // Job втрачено
-                }
-                if (meshJob.Epoch != _streamingEpoch)
-                {
-                    meshJob.Dispose();
-                    _pendingMeshJobs.Remove(coord);
-                    QueueRemesh(coord);
-                    continue;
-                }
-
-                bool applyCollider = addColliders && !_preloaded.Contains(coord);
-                double integrationStart = Time.realtimeSinceStartupAsDouble;
-                chunk.ApplyMesh(meshJob.MeshData, applyCollider);
-                if (enableEdgeOnlyRemesh)
-                    ReleaseFaceCacheForChunk(coord);
-                _lastIntegrationMs = (long)((Time.realtimeSinceStartupAsDouble - integrationStart) * 1000.0);
-
-                if (enableMeshCache && meshJob.LodStep <= 1 && meshJob.MaterialsHash != 0)
-                {
-                    Mesh renderMesh = chunk.GetRenderMesh();
-                    RegisterMeshCacheForChunk(coord, meshJob.MaterialsHash, renderMesh, markShared: true, addCollider: applyCollider);
-                }
-                chunk.IsLowLod = meshJob.LodStep > 1;
-                chunk.LodStartTime = chunk.IsLowLod ? Time.realtimeSinceStartupAsDouble : 0;
-                chunk.LodStep = meshJob.LodStep;
-                chunk.UsesSvo = false;
-                
-                // Force remesh only if chunk has solids but mesh is empty
-                Mesh checkMesh = chunk.GetRenderMesh();
-                if (checkMesh == null || checkMesh.vertexCount == 0)
-                {
-                    if (HasAnySolid(chunk.Data))
-                    {
-                        QueueRemesh(coord);
-                    }
-                    else
-                    {
-                        chunk.SetRendererEnabled(false);
-                        chunk.SetColliderEnabled(false);
-                    }
-                }
-                else if (!_preloaded.Contains(coord))
-                {
-                    // Ensure renderer is enabled for non-preloaded chunks with valid mesh
-                    chunk.SetRendererEnabled(true);
-                }
-
-                if (_preloaded.Contains(coord))
-                {
-                    chunk.SetRendererEnabled(false);
-                    chunk.SetColliderEnabled(false);
-                }
-
-                if (_meshedOnce.Add(coord))
-                    RebuildNeighbors(coord);
-
-                if (_waitingSafeSpawnMesh && coord.Equals(_safeSpawnAnchorCoord))
-                {
-                    SnapPlayerToSafeSpawn();
-                    SetPlayerFrozen(false);
-                    _waitingSafeSpawnMesh = false;
-                }
-
-                meshJob.Dispose();
-                _pendingMeshJobs.Remove(coord);
-
-                if (_remeshAfterIntegration.Remove(coord))
-                    QueueRemesh(coord);
-
-                integrationsThisFrame++;
-            }
-
-            _integrationsLastFrame = integrationsThisFrame;
-        }
-
-        void ProcessRemovalQueue()
-        {
-            if (player == null || worldGen == null) return;
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-            int keepRadius = EffectiveUnloadRadius();
-            if (enablePreload)
-                keepRadius = Mathf.Max(keepRadius, EffectivePreloadRadius());
-
-            double removalStart = Time.realtimeSinceStartupAsDouble;
-            int count = 0;
-            int guard = _removeQueue.Count;
-            while (_removeQueue.Count > 0 && count < maxRemovalsPerFrame && guard-- > 0)
-            {
-                if (BudgetExceeded()) break;
-                if (removalBudgetMs > 0f && (Time.realtimeSinceStartupAsDouble - removalStart) * 1000.0 >= removalBudgetMs)
-                    break;
-                var coord = _removeQueue.Dequeue();
-
-                if (!_active.ContainsKey(coord))
-                {
-                    _removeSet.Remove(coord);
-                    continue;
-                }
-                if (IsWithinKeepRadius(coord, center, keepRadius))
-                {
-                    _removeSet.Remove(coord);
-                    continue;
-                }
-                if (IsChunkBusy(coord))
-                {
-                    _removeQueue.Enqueue(coord);
-                    continue;
-                }
-
-                RemoveChunk(coord);
-                _removeSet.Remove(coord);
-                count++;
-            }
-        }
-
-        void QueueRemoval(ChunkCoord coord)
-        {
-            if (!_active.ContainsKey(coord)) return;
-            if (_removeSet.Add(coord))
-                _removeQueue.Enqueue(coord);
-        }
-
-        bool ShouldRebuildPending(ChunkCoord center)
-        {
-            if (!_hasPendingCenter)
-            {
-                _lastPendingCenter = center;
-                _hasPendingCenter = true;
-                return false;
-            }
-
-            if (pendingQueueCap > 0 && PendingCount > pendingQueueCap)
-                return true;
-
-            if (pendingResetDistance > 0)
-            {
-                int dx = Mathf.Abs(center.X - _lastPendingCenter.X);
-                int dz = Mathf.Abs(center.Z - _lastPendingCenter.Z);
-                if (dx > pendingResetDistance || dz > pendingResetDistance)
-                    return true;
-            }
-
-            return false;
-        }
-
-        void RebuildPendingQueue(ChunkCoord center)
-        {
-            _pending.Clear();
-            _pendingSet.Clear();
-            if (viewCone != null && viewCone.Enabled)
-                viewCone.Clear();
-            _lastPendingCenter = center;
-            _hasPendingCenter = true;
-
-            for (int dz = -loadRadius; dz <= loadRadius; dz++)
-            {
-                for (int dx = -loadRadius; dx <= loadRadius; dx++)
-                {
-                    for (int dy = 0; dy < worldGen.ColumnChunks; dy++)
-                    {
-                        var coord = new ChunkCoord(center.X + dx, dy, center.Z + dz);
-                        if (_active.ContainsKey(coord)) continue;
-                        if (viewCone != null && viewCone.Enabled)
-                        {
-                            if (_pendingSet.Add(coord))
-                                viewCone.EnqueueWithPriority(coord, center, player);
-                        }
-                        else
-                        {
-                            _pendingSet.Add(coord);
-                        }
-                    }
-                }
-            }
-        }
-
-        void DropOnePendingOldest(ChunkCoord center)
-        {
-            if (PendingCount == 0) return;
-            ChunkCoord dropped;
-            if (viewCone != null && viewCone.Enabled)
-            {
-                if (!viewCone.TryRemoveLowestPriority(out dropped)) return;
-            }
-            else
-            {
-                if (!TryFindFarthestPending(center, out dropped)) return;
-            }
-            _pendingSet.Remove(dropped);
-        }
-
-        bool TryDequeuePending(ChunkCoord center, out ChunkCoord coord)
-        {
-            if (PendingCount == 0)
-            {
-                coord = default;
-                return false;
-            }
-            if (viewCone != null && viewCone.Enabled && !viewCone.DistanceOnly)
-            {
-                if (!viewCone.TryDequeue(out coord))
-                    return false;
-                _pendingSet.Remove(coord);
-                return true;
-            }
-            if (!TryFindClosestPending(center, out coord))
-                return false;
-            _pendingSet.Remove(coord);
-            return true;
-        }
-
-        bool TryFindClosestPending(ChunkCoord center, out ChunkCoord coord)
-        {
-            coord = default;
-            if (_pendingSet.Count == 0) return false;
-            ChunkCoord best = default;
-            int bestDistSq = int.MaxValue;
-            foreach (var c in _pendingSet)
-            {
-                int dx = c.X - center.X;
-                int dz = c.Z - center.Z;
-                int d = dx * dx + dz * dz; // 2D distance (XZ)
-                if (d < bestDistSq)
-                {
-                    bestDistSq = d;
-                    best = c;
-                }
-            }
-            coord = best;
-            return true;
-        }
-
-        bool TryFindFarthestPending(ChunkCoord center, out ChunkCoord coord)
-        {
-            coord = default;
-            if (_pendingSet.Count == 0) return false;
-            ChunkCoord best = default;
-            int bestDistSq = -1;
-            foreach (var c in _pendingSet)
-            {
-                int dx = c.X - center.X;
-                int dz = c.Z - center.Z;
-                int d = dx * dx + dz * dz; // 2D distance (XZ)
-                if (d > bestDistSq)
-                {
-                    bestDistSq = d;
-                    best = c;
-                }
-            }
-            coord = best;
-            return true;
-        }
-
-        bool IsWithinKeepRadius(ChunkCoord coord, ChunkCoord center, int keepRadius)
-        {
-            if (worldGen == null) return false;
-            if (coord.Y < 0 || coord.Y >= worldGen.ColumnChunks) return false;
-            int dx = Mathf.Abs(coord.X - center.X);
-            int dz = Mathf.Abs(coord.Z - center.Z);
-            return dx <= keepRadius && dz <= keepRadius;
-        }
-
-        bool IsWithinLoadRadius(ChunkCoord coord, ChunkCoord center, int radius)
-        {
-            if (worldGen == null) return false;
-            if (coord.Y < 0 || coord.Y >= worldGen.ColumnChunks) return false;
-            int dx = Mathf.Abs(coord.X - center.X);
-            int dz = Mathf.Abs(coord.Z - center.Z);
-            return dx <= radius && dz <= radius;
-        }
-
-        int GetInitialLodStep(ChunkCoord coord)
-        {
-            if (enableFullLod && lodSettings != null && player != null && worldGen != null)
-            {
-                ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-                int dx = Mathf.Abs(coord.X - center.X);
-                int dz = Mathf.Abs(coord.Z - center.Z);
-                int dist = Mathf.Max(dx, dz);
-                var desired = lodSettings.ResolveLevel(dist, 1, ChunkLodMode.Mesh);
-                return Mathf.Max(1, desired.LodStep);
-            }
-
-            if (!enableReverseLod) return 1;
-            if (reverseLodStep <= 1) return 1;
-            if (player == null || worldGen == null) return 1;
-
-            ChunkCoord playerChunk = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-            int dxx = Mathf.Abs(coord.X - playerChunk.X);
-            int dzz = Mathf.Abs(coord.Z - playerChunk.Z);
-            int dist2 = Mathf.Max(dxx, dzz);
-            if (dist2 <= reverseLodMinDistance) return 1;
-            return reverseLodStep;
-        }
-
-        bool IsChunkBusy(ChunkCoord coord)
-        {
-            return _genJobs.ContainsKey(coord) || _meshJobs.ContainsKey(coord);
-        }
-
-        bool IsChunkGenerating(ChunkCoord coord)
-        {
-            return _genJobs.ContainsKey(coord);
-        }
-
-        void ScheduleGenJob(ChunkCoord coord, Chunk chunk, double spawnStart, bool applySafeSpawn, bool applyDelta)
-        {
-            if (_genJobs.ContainsKey(coord)) return;
-            if (_generator == null || worldGen == null) return;
-            if (chunk == null || !chunk.Data.IsCreated) return;
-            bool useSlices = enableGenSlicing && genSliceCount > 1;
-            int total = chunk.Data.Materials.Length;
-            int slices = useSlices ? Mathf.Max(1, genSliceCount) : 1;
-            int sliceSize = useSlices ? (total + slices - 1) / slices : total;
-            int count = useSlices ? Mathf.Min(sliceSize, total) : total;
-
-            var handle = _generator.Schedule(chunk.Data, coord, worldGen, noiseStack, out var layers, 0, count);
-            var job = new ChunkGenJobHandle
-            {
-                Handle = handle,
-                Layers = layers
-            };
-
-            _genJobs[coord] = new GenTask
-            {
-                Coord = coord,
-                Chunk = chunk,
-                Job = job,
-                StartTime = Time.realtimeSinceStartupAsDouble,
-                SpawnStart = spawnStart,
-                ApplySafeSpawn = applySafeSpawn,
-                ApplyDelta = applyDelta,
-                Epoch = _streamingEpoch,
-                UseSlices = useSlices,
-                SliceIndex = 0,
-                SliceCount = slices,
-                SliceSize = sliceSize
-            };
-        }
-
-        bool ScheduleMeshForChunk(ChunkCoord coord, double spawnStart, int lodStep = 1)
-        {
-            if (!_active.TryGetValue(coord, out var chunk)) return false;
-            if (!chunk.Data.IsCreated) return false;
-            if (IsChunkGenerating(coord)) return false;
-            if (_meshJobs.ContainsKey(coord)) return false;
-            if (IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord))
-            {
-                _remeshAfterIntegration.Add(coord);
-                return false;
-            }
-            if (_meshJobs.Count >= CurrentMaxMeshJobsInFlight) return false;
-
-            lodStep = Mathf.Max(1, lodStep);
-            int chunkSize = chunk.Data.Size;
-            if (lodStep > 1 && (lodStep > chunkSize || (chunkSize % lodStep) != 0))
-            {
-                if (!_warnedLodStepMismatch)
-                {
-                    Debug.LogWarning($"[ChunkManager] Reverse LOD step {lodStep} is invalid for chunk size {chunkSize}. Falling back to full detail.");
-                    _warnedLodStepMismatch = true;
-                }
-                lodStep = 1;
-            }
-
-            ulong materialsHash = 0;
-            bool useCache = enableMeshCache && maxMeshCacheEntries > 0 && lodStep == 1;
-
-            NeighborDataBuffers neighbors = default;
-            var meshData = new MeshData(Unity.Collections.Allocator.Persistent);
-            NativeArray<ushort> materialsCopy;
-            ChunkData dataCopy;
-            float voxelScale = VoxelConstants.VoxelSize;
-
-            if (lodStep > 1)
-            {
-                int srcSize = chunk.Data.Size;
-                int lodSize = Mathf.Max(1, srcSize / lodStep);
-                materialsCopy = new NativeArray<ushort>(lodSize * lodSize * lodSize, Allocator.Persistent);
-                DownsampleMaterials(chunk.Data.Materials, srcSize, lodStep, materialsCopy);
-                dataCopy = new ChunkData { Materials = materialsCopy, Size = lodSize };
-                voxelScale = VoxelConstants.VoxelSize * lodStep;
-                neighbors = GatherNeighborCopiesLod(coord, lodStep, lodSize, srcSize);
-            }
-            else
-            {
-                neighbors = GatherNeighborCopies(coord);
-                materialsCopy = new NativeArray<ushort>(chunk.Data.Materials.Length, Allocator.Persistent);
-                NativeArray<ushort>.Copy(chunk.Data.Materials, materialsCopy);
-                dataCopy = new ChunkData { Materials = materialsCopy, Size = chunk.Data.Size };
-            }
-
-            if (useCache)
-            {
-                if (!HasAllNeighbors(neighbors.Data))
-                {
-                    useCache = false;
-                }
-                else
-                {
-                    materialsHash = ComputeMeshCacheHash(chunk.Data.Materials, chunk.Data.Size, neighbors, lodStep, chunk.Data.Density);
-                    
-                    // Before using cached mesh, verify neighbors haven't changed
-                    // This prevents using stale meshes when neighbors were updated
-                    if (_meshCache.TryGetValue(materialsHash, out var cachedEntry) && cachedEntry.Mesh != null)
-                    {
-                        // Re-validate neighbors are still the same
-                        // If any neighbor is generating or missing, don't use cache
-                        var negXCoord = new ChunkCoord(coord.X - 1, coord.Y, coord.Z);
-                        var posXCoord = new ChunkCoord(coord.X + 1, coord.Y, coord.Z);
-                        var negYCoord = new ChunkCoord(coord.X, coord.Y - 1, coord.Z);
-                        var posYCoord = new ChunkCoord(coord.X, coord.Y + 1, coord.Z);
-                        var negZCoord = new ChunkCoord(coord.X, coord.Y, coord.Z - 1);
-                        var posZCoord = new ChunkCoord(coord.X, coord.Y, coord.Z + 1);
-                        
-                        bool neighborsValid = true;
-                        neighborsValid &= !IsChunkGenerating(negXCoord) && _active.ContainsKey(negXCoord);
-                        neighborsValid &= !IsChunkGenerating(posXCoord) && _active.ContainsKey(posXCoord);
-                        neighborsValid &= !IsChunkGenerating(negYCoord) && _active.ContainsKey(negYCoord);
-                        neighborsValid &= !IsChunkGenerating(posYCoord) && _active.ContainsKey(posYCoord);
-                        neighborsValid &= !IsChunkGenerating(negZCoord) && _active.ContainsKey(negZCoord);
-                        neighborsValid &= !IsChunkGenerating(posZCoord) && _active.ContainsKey(posZCoord);
-                        
-                        if (!neighborsValid)
-                        {
-                            useCache = false;
-                        }
-                    }
-                }
-                
-                if (useCache && _meshCache.TryGetValue(materialsHash, out var cachedMesh) && cachedMesh.Mesh != null)
-                {
-                    // Final validation: mesh must have vertices
-                    if (cachedMesh.Mesh.vertexCount == 0)
-                    {
-                        useCache = false;
-                    }
-                    else
-                    {
-                        cachedMesh.LastUsedFrame = Time.frameCount;
-                        _meshCache[materialsHash] = cachedMesh;
-                        if (TryQueueCachedMesh(coord, materialsHash, cachedMesh.Mesh))
-                        {
-                            neighbors.Dispose();
-                            materialsCopy.Dispose();
-                            meshData.Dispose();
-                            return true;
-                        }
-                    }
-                }
-            }
-
-            var mask = new NativeArray<GreedyMesher.MaskCell>(dataCopy.Size * dataCopy.Size, Allocator.Persistent);
-            if (!_emptyMaterials.IsCreated)
-                _emptyMaterials = new NativeArray<ushort>(0, Allocator.Persistent);
-            var empty = _emptyMaterials;
-
-            GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
-            var handle = GreedyMesher.Schedule(dataCopy, neighbors.Data, maxMaterialIndex, fallbackMaterialIndex, mask, empty, ref meshData, voxelScale, 0, enableSeamSkirts, seamSkirtOffset);
-
-            var meshJob = new ChunkMeshJobHandle
-            {
-                Handle = handle,
-                MeshData = meshData,
-                MaterialsCopy = materialsCopy,
-                Mask = mask,
-                Empty = empty,
-                Neighbors = neighbors,
-                Epoch = _streamingEpoch,
-                MaterialsHash = materialsHash,
-                LodStep = lodStep,
-                OwnsEmpty = false
-            };
-
-            _meshJobs[coord] = new MeshTask
-            {
-                Coord = coord,
-                Chunk = chunk,
-                Job = meshJob,
-                StartTime = Time.realtimeSinceStartupAsDouble,
-                SpawnStart = spawnStart
-            };
-
-            return true;
-        }
-
-        NeighborDataBuffers GatherNeighborCopies(ChunkCoord coord)
-        {
-            var buffers = new NeighborDataBuffers();
-            var data = new GreedyMesher.NeighborData();
-
-            var negXCoord = new ChunkCoord(coord.X - 1, coord.Y, coord.Z);
-            if (_active.TryGetValue(negXCoord, out var negX) && negX.Data.IsCreated && !IsChunkGenerating(negXCoord))
-            {
-                data.HasNegX = true;
-                buffers.NegX = new NativeArray<ushort>(negX.Data.Materials.Length, Allocator.Persistent);
-                NativeArray<ushort>.Copy(negX.Data.Materials, buffers.NegX);
-                data.NegX = buffers.NegX;
-            }
-            var posXCoord = new ChunkCoord(coord.X + 1, coord.Y, coord.Z);
-            if (_active.TryGetValue(posXCoord, out var posX) && posX.Data.IsCreated && !IsChunkGenerating(posXCoord))
-            {
-                data.HasPosX = true;
-                buffers.PosX = new NativeArray<ushort>(posX.Data.Materials.Length, Allocator.Persistent);
-                NativeArray<ushort>.Copy(posX.Data.Materials, buffers.PosX);
-                data.PosX = buffers.PosX;
-            }
-            var negYCoord = new ChunkCoord(coord.X, coord.Y - 1, coord.Z);
-            if (_active.TryGetValue(negYCoord, out var negY) && negY.Data.IsCreated && !IsChunkGenerating(negYCoord))
-            {
-                data.HasNegY = true;
-                buffers.NegY = new NativeArray<ushort>(negY.Data.Materials.Length, Allocator.Persistent);
-                NativeArray<ushort>.Copy(negY.Data.Materials, buffers.NegY);
-                data.NegY = buffers.NegY;
-            }
-            var posYCoord = new ChunkCoord(coord.X, coord.Y + 1, coord.Z);
-            if (_active.TryGetValue(posYCoord, out var posY) && posY.Data.IsCreated && !IsChunkGenerating(posYCoord))
-            {
-                data.HasPosY = true;
-                buffers.PosY = new NativeArray<ushort>(posY.Data.Materials.Length, Allocator.Persistent);
-                NativeArray<ushort>.Copy(posY.Data.Materials, buffers.PosY);
-                data.PosY = buffers.PosY;
-            }
-            var negZCoord = new ChunkCoord(coord.X, coord.Y, coord.Z - 1);
-            if (_active.TryGetValue(negZCoord, out var negZ) && negZ.Data.IsCreated && !IsChunkGenerating(negZCoord))
-            {
-                data.HasNegZ = true;
-                buffers.NegZ = new NativeArray<ushort>(negZ.Data.Materials.Length, Allocator.Persistent);
-                NativeArray<ushort>.Copy(negZ.Data.Materials, buffers.NegZ);
-                data.NegZ = buffers.NegZ;
-            }
-            var posZCoord = new ChunkCoord(coord.X, coord.Y, coord.Z + 1);
-            if (_active.TryGetValue(posZCoord, out var posZ) && posZ.Data.IsCreated && !IsChunkGenerating(posZCoord))
-            {
-                data.HasPosZ = true;
-                buffers.PosZ = new NativeArray<ushort>(posZ.Data.Materials.Length, Allocator.Persistent);
-                NativeArray<ushort>.Copy(posZ.Data.Materials, buffers.PosZ);
-                data.PosZ = buffers.PosZ;
-            }
-
-            buffers.Data = data;
-            return buffers;
-        }
-
-        NeighborDataBuffers GatherNeighborCopiesLod(ChunkCoord coord, int lodStep, int lodSize, int srcSize)
-        {
-            var buffers = new NeighborDataBuffers();
-            var data = new GreedyMesher.NeighborData();
-            int lodCount = lodSize * lodSize * lodSize;
-
-            var negXCoord = new ChunkCoord(coord.X - 1, coord.Y, coord.Z);
-            if (_active.TryGetValue(negXCoord, out var negX) && negX.Data.IsCreated && !IsChunkGenerating(negXCoord))
-            {
-                data.HasNegX = true;
-                buffers.NegX = new NativeArray<ushort>(lodCount, Allocator.Persistent);
-                DownsampleMaterials(negX.Data.Materials, srcSize, lodStep, buffers.NegX);
-                data.NegX = buffers.NegX;
-            }
-            var posXCoord = new ChunkCoord(coord.X + 1, coord.Y, coord.Z);
-            if (_active.TryGetValue(posXCoord, out var posX) && posX.Data.IsCreated && !IsChunkGenerating(posXCoord))
-            {
-                data.HasPosX = true;
-                buffers.PosX = new NativeArray<ushort>(lodCount, Allocator.Persistent);
-                DownsampleMaterials(posX.Data.Materials, srcSize, lodStep, buffers.PosX);
-                data.PosX = buffers.PosX;
-            }
-            var negYCoord = new ChunkCoord(coord.X, coord.Y - 1, coord.Z);
-            if (_active.TryGetValue(negYCoord, out var negY) && negY.Data.IsCreated && !IsChunkGenerating(negYCoord))
-            {
-                data.HasNegY = true;
-                buffers.NegY = new NativeArray<ushort>(lodCount, Allocator.Persistent);
-                DownsampleMaterials(negY.Data.Materials, srcSize, lodStep, buffers.NegY);
-                data.NegY = buffers.NegY;
-            }
-            var posYCoord = new ChunkCoord(coord.X, coord.Y + 1, coord.Z);
-            if (_active.TryGetValue(posYCoord, out var posY) && posY.Data.IsCreated && !IsChunkGenerating(posYCoord))
-            {
-                data.HasPosY = true;
-                buffers.PosY = new NativeArray<ushort>(lodCount, Allocator.Persistent);
-                DownsampleMaterials(posY.Data.Materials, srcSize, lodStep, buffers.PosY);
-                data.PosY = buffers.PosY;
-            }
-            var negZCoord = new ChunkCoord(coord.X, coord.Y, coord.Z - 1);
-            if (_active.TryGetValue(negZCoord, out var negZ) && negZ.Data.IsCreated && !IsChunkGenerating(negZCoord))
-            {
-                data.HasNegZ = true;
-                buffers.NegZ = new NativeArray<ushort>(lodCount, Allocator.Persistent);
-                DownsampleMaterials(negZ.Data.Materials, srcSize, lodStep, buffers.NegZ);
-                data.NegZ = buffers.NegZ;
-            }
-            var posZCoord = new ChunkCoord(coord.X, coord.Y, coord.Z + 1);
-            if (_active.TryGetValue(posZCoord, out var posZ) && posZ.Data.IsCreated && !IsChunkGenerating(posZCoord))
-            {
-                data.HasPosZ = true;
-                buffers.PosZ = new NativeArray<ushort>(lodCount, Allocator.Persistent);
-                DownsampleMaterials(posZ.Data.Materials, srcSize, lodStep, buffers.PosZ);
-                data.PosZ = buffers.PosZ;
-            }
-
-            buffers.Data = data;
-            return buffers;
-        }
-
-        void DownsampleMaterials(NativeArray<ushort> source, int srcSize, int lodStep, NativeArray<ushort> dest)
-        {
-            if (!source.IsCreated || source.Length == 0 || lodStep <= 1)
-            {
-                if (source.IsCreated && dest.Length == source.Length)
-                    NativeArray<ushort>.Copy(source, dest);
-                return;
-            }
-
-            int lodSize = srcSize / lodStep;
-            for (int z = 0; z < lodSize; z++)
-            {
-                int sz = z * lodStep;
-                for (int y = 0; y < lodSize; y++)
-                {
-                    int sy = y * lodStep;
-                    for (int x = 0; x < lodSize; x++)
-                    {
-                        int sx = x * lodStep;
-                        int dstIndex = x + lodSize * (y + lodSize * z);
-                        ushort material = 0;
-                        int maxX = Mathf.Min(srcSize, sx + lodStep);
-                        int maxY = Mathf.Min(srcSize, sy + lodStep);
-                        int maxZ = Mathf.Min(srcSize, sz + lodStep);
-                        bool found = false;
-                        for (int zz = sz; zz < maxZ && !found; zz++)
-                        {
-                            for (int yy = sy; yy < maxY && !found; yy++)
-                            {
-                                int baseIndex = srcSize * (yy + srcSize * zz);
-                                for (int xx = sx; xx < maxX; xx++)
-                                {
-                                    ushort m = source[baseIndex + xx];
-                                    if (m != 0)
-                                    {
-                                        material = m;
-                                        found = true;
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        dest[dstIndex] = material;
-                    }
-                }
-            }
-        }
-
-        void GetMeshMaterialSettings(Chunk chunk, out byte maxMaterialIndex, out byte fallbackMaterialIndex)
-        {
-            maxMaterialIndex = 255;
-            fallbackMaterialIndex = 1;
-            if (worldGen != null)
-            {
-                int defaultIndex = worldGen.DefaultMaterialIndex <= 0 ? 1 : Mathf.Clamp(worldGen.DefaultMaterialIndex, 1, 255);
-                fallbackMaterialIndex = (byte)defaultIndex;
-            }
-
-            var binder = chunk != null ? chunk.GetComponent<VoxelMaterialBinder>() : null;
-            if (binder != null && binder.Library != null)
-            {
-                if (binder.Library.TextureArray != null)
-                {
-                    int maxLayerIndex = Mathf.Clamp(binder.Library.TextureArray.depth - 1, 0, 255);
-                    maxMaterialIndex = (byte)maxLayerIndex;
-                }
-
-                int fallbackIndex = Mathf.Clamp(binder.Library.DefaultLayerIndex, 0, maxMaterialIndex);
-                fallbackMaterialIndex = (byte)fallbackIndex;
-            }
-        }
-
-        void ProcessFaceRemeshQueue()
-        {
-            int count = 0;
-            int guard = _faceRemeshQueue.Count;
-            int limit = Mathf.Max(1, maxFaceRemeshPerFrame);
-            int maxInFlight = CurrentMaxMeshJobsInFlight;
-
-            while (_faceRemeshQueue.Count > 0 && count < limit && guard-- > 0)
-            {
-                if (BudgetExceeded()) break;
-                if (_meshJobs.Count + _faceMeshJobs.Count >= maxInFlight) break;
-
-                var coord = _faceRemeshQueue.Dequeue();
-                _faceRemeshSet.Remove(coord);
-                if (!_neighborDirtyFaces.TryGetValue(coord, out int faceMask))
-                {
-                    _neighborDirtyFaces.Remove(coord);
-                    continue;
-                }
-                _neighborDirtyFaces.Remove(coord);
-
-                if (!_active.TryGetValue(coord, out var chunk)) continue;
-                if (_remeshSet.Contains(coord)) continue;
-                if (_meshJobs.ContainsKey(coord)) continue;
-                if (_faceMeshJobs.ContainsKey(coord)) continue;
-                if (IsChunkGenerating(coord))
-                {
-                    _neighborDirtyFaces[coord] = faceMask;
-                    if (_faceRemeshSet.Add(coord))
-                        _faceRemeshQueue.Enqueue(coord);
-                    continue;
-                }
-                if (IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord))
-                {
-                    _remeshAfterIntegration.Add(coord);
-                    continue;
-                }
-                if (chunk.UsesSvo || chunk.LodStep > 1)
-                {
-                    QueueRemesh(coord);
-                    continue;
-                }
-
-                if (ScheduleFaceRemeshJobAsync(coord, chunk, faceMask))
-                    count++;
-                else
-                {
-                    _neighborDirtyFaces[coord] = faceMask;
-                    if (_faceRemeshSet.Add(coord))
-                        _faceRemeshQueue.Enqueue(coord);
-                }
-            }
-        }
-
-        void ProcessFaceMeshJobs()
-        {
-            if (_faceMeshJobs.Count == 0) return;
-
-            var completed = new List<ChunkCoord>();
-            foreach (var kvp in _faceMeshJobs)
-            {
-                if (kvp.Value.Job.Handle.IsCompleted)
-                    completed.Add(kvp.Key);
-            }
-
-            foreach (var coord in completed)
-            {
-                if (!_faceMeshJobs.TryGetValue(coord, out var task)) continue;
-                task.Job.Handle.Complete();
-                _faceMeshJobs.Remove(coord);
-
-                if (!_active.TryGetValue(coord, out var chunk) || chunk != task.Chunk)
-                {
-                    task.Job.Dispose();
-                    continue;
-                }
-
-                chunk.ApplyMesh(task.Job.MeshData, addCollider: false);
-                ReleaseFaceCacheForChunk(coord);
-                task.Job.Dispose();
-            }
-        }
-
-        bool ScheduleFaceRemeshJobAsync(ChunkCoord coord, Chunk chunk, int faceMask)
-        {
-            if (!chunk.Data.IsCreated) return false;
-            if (_meshJobs.Count + _faceMeshJobs.Count >= CurrentMaxMeshJobsInFlight) return false;
-            var neighbors = GatherNeighborCopies(coord);
-            if (!HasAllNeighbors(neighbors.Data))
-            {
-                neighbors.Dispose();
-                QueueRemesh(coord);
-                return true;
-            }
-
-            GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
-            int chunkSize = chunk.Data.Size;
-            float voxelScale = VoxelConstants.VoxelSize;
-
-            var materialsCopy = new NativeArray<ushort>(chunk.Data.Materials.Length, Allocator.Persistent);
-            NativeArray<ushort>.Copy(chunk.Data.Materials, materialsCopy);
-
-            var dataForJob = default(ChunkData);
-            dataForJob.Materials = materialsCopy;
-            dataForJob.Size = chunkSize;
-
-            var meshData = new MeshData(Allocator.Persistent);
-            var mask = new NativeArray<GreedyMesher.MaskCell>(chunkSize * chunkSize, Allocator.Persistent);
-            if (!_emptyMaterials.IsCreated)
-                _emptyMaterials = new NativeArray<ushort>(0, Allocator.Persistent);
-
-            var handle = GreedyMesher.Schedule(dataForJob, neighbors.Data, maxMaterialIndex, fallbackMaterialIndex, mask, _emptyMaterials, ref meshData, voxelScale, GreedyMesher.FaceMaskAll, enableSeamSkirts, seamSkirtOffset);
-
-            var job = new FaceMeshJobHandle
-            {
-                Handle = handle,
-                MeshData = meshData,
-                MaterialsCopy = materialsCopy,
-                Mask = mask,
-                Neighbors = neighbors
-            };
-
-            _faceMeshJobs[coord] = new FaceMeshTask
-            {
-                Coord = coord,
-                Chunk = chunk,
-                Job = job,
-                FaceMask = faceMask
-            };
-
-            return true;
-        }
-
-        void ProcessRemeshQueue()
-        {
-            if (_remeshSet.Count == 0) return;
-            if (player == null || worldGen == null) return;
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-
-            int count = 0;
-            int guard = _remeshSet.Count;
-            while (_remeshSet.Count > 0 && count < maxRemeshPerFrame && guard-- > 0)
-            {
-                if (BudgetExceeded()) break;
-                if (_meshJobs.Count >= CurrentMaxMeshJobsInFlight) break;
-                if (!TryDequeueClosestRemesh(center, out var coord))
-                    break;
-
-                if (!_active.ContainsKey(coord)) continue;
-                if (_meshJobs.ContainsKey(coord)) continue;
-                if (IsChunkGenerating(coord))
-                {
-                    _remeshSet.Add(coord);
-                    continue;
-                }
-                if (IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord))
-                {
-                    // Already integrating, defer remesh until after integration
-                    _remeshAfterIntegration.Add(coord);
-                    continue;
-                }
-
-                int remeshLodStep = GetInitialLodStep(coord);
-                if (ScheduleMeshForChunk(coord, 0, remeshLodStep))
-                {
-                    count++;
-                }
-                else
-                    _remeshSet.Add(coord);
-            }
-        }
-
-        void ProcessFullLod()
-        {
-            if (!enableFullLod) return;
-            if (lodSettings == null) return;
-            if (player == null || worldGen == null) return;
-
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-            int transitions = 0;
-            int svoBuilds = 0;
-            double now = Time.realtimeSinceStartupAsDouble;
-            int transitionLimit = maxLodTransitionsPerFrame;
-            if (scaleJobsByProcessorCount)
-                transitionLimit = Mathf.Max(transitionLimit, CurrentMaxMeshJobsInFlight * 2);
-            transitionLimit = Mathf.Min(transitionLimit, 64);
-
-            var upgrades = new List<(ChunkCoord coord, Chunk chunk, int dist, ChunkLodLevel desired, ChunkLodLevel current)>();
-            var downgrades = new List<(ChunkCoord coord, Chunk chunk, int dist, ChunkLodLevel desired, ChunkLodLevel current)>();
-
-            foreach (var kvp in _active)
-            {
-                if (BudgetExceeded()) break;
-                var coord = kvp.Key;
-                var chunk = kvp.Value;
-                if (chunk == null) continue;
-                if (_preloaded.Contains(coord)) continue;
-                if (IsChunkBusy(coord) || IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
-
-                int dist = Mathf.Max(Mathf.Abs(coord.X - center.X), Mathf.Abs(coord.Z - center.Z));
-                ChunkLodMode currentMode = chunk.UsesSvo ? ChunkLodMode.Svo : ChunkLodMode.Mesh;
-                int currentStep = Mathf.Max(1, chunk.LodStep);
-                var desired = lodSettings.ResolveLevel(dist, currentStep, currentMode);
-                if (desired.Mode == currentMode && desired.LodStep == currentStep) continue;
-
-                var currentLevel = new ChunkLodLevel { MinDistance = 0, MaxDistance = int.MaxValue, LodStep = currentStep, Hysteresis = 0, Mode = currentMode };
-                bool isUpgrade = lodSettings.GetDetailRankFor(desired) < lodSettings.GetDetailRankFor(currentLevel);
-                if (!isUpgrade && lodTransitionCooldown > 0f && now - chunk.LodStartTime < lodTransitionCooldown) continue;
-
-                if (isUpgrade)
-                    upgrades.Add((coord, chunk, dist, desired, currentLevel));
-                else
-                    downgrades.Add((coord, chunk, dist, desired, currentLevel));
-            }
-
-            upgrades.Sort((a, b) => a.dist.CompareTo(b.dist));
-            downgrades.Sort((a, b) => b.dist.CompareTo(a.dist));
-
-            foreach (var t in upgrades)
-            {
-                if (transitions >= transitionLimit) break;
-                if (BudgetExceeded()) break;
-                if (_meshJobs.Count >= CurrentMaxMeshJobsInFlight) break;
-                var (coord, chunk, dist, desired, currentLevel) = t;
-                if (chunk == null) continue;
-                if (IsChunkBusy(coord) || IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
-
-                if (enableLodTransitionLog)
-                    Debug.Log($"[ChunkManager] LOD upgrade: Dist={dist}, Current Step={currentLevel.LodStep} Mode={currentLevel.Mode}, Target Step={desired.LodStep} Mode={desired.Mode}");
-
-                if (desired.Mode == ChunkLodMode.None)
-                {
-                    chunk.SetRendererEnabled(false);
-                    chunk.SetColliderEnabled(false);
-                    chunk.UsesSvo = false;
-                    chunk.LodStep = desired.LodStep;
-                    chunk.IsLowLod = true;
-                    chunk.LodStartTime = now;
-                    transitions++;
-                    continue;
-                }
-
-                if (desired.Mode == ChunkLodMode.Svo)
-                {
-                    if (svoManager == null) continue;
-                    if (svoBuilds >= maxSvoBuildsPerFrame) continue;
-                    GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
-                    if (svoManager.TryGetOrBuildMesh(coord, chunk.Data, desired.LodStep, maxMaterialIndex, fallbackMaterialIndex, out var svoMesh))
-                    {
-                        chunk.ApplySharedMesh(svoMesh, addCollider: false);
-                        if (srpBatchingConfig != null) srpBatchingConfig.ApplyToChunk(chunk);
-                        else if (voxelMaterial != null) chunk.SetSharedMaterial(voxelMaterial);
-                        chunk.UsesSvo = true;
-                        chunk.LodStep = desired.LodStep;
-                        chunk.IsLowLod = true;
-                        chunk.LodStartTime = now;
-                        transitions++;
-                        svoBuilds++;
-                    }
-                    continue;
-                }
-
-                if (ScheduleMeshForChunk(coord, 0, desired.LodStep))
-                {
-                    chunk.UsesSvo = false;
-                    chunk.LodStep = desired.LodStep;
-                    chunk.IsLowLod = desired.LodStep > 1;
-                    chunk.LodStartTime = now;
-                    transitions++;
-                }
-            }
-
-            foreach (var t in downgrades)
-            {
-                if (transitions >= transitionLimit) break;
-                if (BudgetExceeded()) break;
-                if (_meshJobs.Count >= CurrentMaxMeshJobsInFlight) break;
-                var (coord, chunk, dist, desired, currentLevel) = t;
-                if (chunk == null) continue;
-                if (IsChunkBusy(coord) || IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
-
-                if (enableLodTransitionLog)
-                    Debug.Log($"[ChunkManager] LOD downgrade: Dist={dist}, Current Step={currentLevel.LodStep} Mode={currentLevel.Mode}, Target Step={desired.LodStep} Mode={desired.Mode}");
-
-                if (desired.Mode == ChunkLodMode.None)
-                {
-                    chunk.SetRendererEnabled(false);
-                    chunk.SetColliderEnabled(false);
-                    chunk.UsesSvo = false;
-                    chunk.LodStep = desired.LodStep;
-                    chunk.IsLowLod = true;
-                    chunk.LodStartTime = now;
-                    transitions++;
-                    continue;
-                }
-
-                if (desired.Mode == ChunkLodMode.Svo)
-                {
-                    if (svoManager == null) continue;
-                    if (svoBuilds >= maxSvoBuildsPerFrame) continue;
-                    GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
-                    if (svoManager.TryGetOrBuildMesh(coord, chunk.Data, desired.LodStep, maxMaterialIndex, fallbackMaterialIndex, out var svoMesh))
-                    {
-                        chunk.ApplySharedMesh(svoMesh, addCollider: false);
-                        if (srpBatchingConfig != null) srpBatchingConfig.ApplyToChunk(chunk);
-                        else if (voxelMaterial != null) chunk.SetSharedMaterial(voxelMaterial);
-                        chunk.UsesSvo = true;
-                        chunk.LodStep = desired.LodStep;
-                        chunk.IsLowLod = true;
-                        chunk.LodStartTime = now;
-                        transitions++;
-                        svoBuilds++;
-                    }
-                    continue;
-                }
-
-                if (ScheduleMeshForChunk(coord, 0, desired.LodStep))
-                {
-                    chunk.UsesSvo = false;
-                    chunk.LodStep = desired.LodStep;
-                    chunk.IsLowLod = desired.LodStep > 1;
-                    chunk.LodStartTime = now;
-                    transitions++;
-                }
-            }
-        }
-
-        void ProcessLodUpgrades()
-        {
-            if (!enableReverseLod) return;
-            if (reverseLodStep <= 1) return;
-            if (reverseLodUpgradeSeconds <= 0f) return;
-            if (maxLodUpgradesPerFrame <= 0) return;
-            if (player == null || worldGen == null) return;
-
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-            int upgrades = 0;
-            foreach (var kvp in _active)
-            {
-                if (upgrades >= maxLodUpgradesPerFrame) break;
-                if (BudgetExceeded()) break;
-                if (_meshJobs.Count >= CurrentMaxMeshJobsInFlight) break;
-
-                var coord = kvp.Key;
-                var chunk = kvp.Value;
-                if (chunk == null) continue;
-                
-                // Check if chunk has low-LOD mesh (either flag or by checking mesh vertex count vs expected)
-                bool isLowLod = chunk.IsLowLod;
-                if (!isLowLod)
-                {
-                    Mesh mesh = chunk.GetRenderMesh();
-                    if (mesh != null && mesh.vertexCount > 0)
-                    {
-                        // Heuristic: low-LOD meshes have significantly fewer vertices
-                        // Also check if mesh looks "blocky" (low detail) - this catches artifacts under terrain
-                        int expectedFullVertices = chunk.Data.Size * chunk.Data.Size * 6 * 4; // rough estimate
-                        if (mesh.vertexCount < expectedFullVertices * 0.3f)
-                            isLowLod = true;
-                    }
-                    else if (mesh == null || mesh.vertexCount == 0)
-                    {
-                        // Empty mesh - force remesh
-                        QueueRemesh(coord);
-                        continue;
-                    }
-                }
-                
-                if (!isLowLod) continue;
-                if (chunk.IsLowLod && reverseLodUpgradeSeconds > 0f && (Time.realtimeSinceStartupAsDouble - chunk.LodStartTime) < reverseLodUpgradeSeconds) continue;
-                if (!IsWithinLoadRadius(coord, center, loadRadius)) continue;
-                if (IsChunkBusy(coord)) continue;
-                if (IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord)) continue;
-
-                chunk.IsLowLod = false;
-                chunk.LodStartTime = 0;
-                if (ScheduleMeshForChunk(coord, 0, 1))
-                    upgrades++;
-            }
-        }
-
-        void SpawnChunk(ChunkCoord coord, bool preload = false)
-        {
-            EnsurePrefab();
-            if (_pool == null) _pool = new ChunkPool(chunkPrefab, transform);
-            if (_generator == null) _generator = new ChunkGenerator();
-
-            var chunk = _pool.Get();
-            chunk.Initialize(coord);
-            if (srpBatchingConfig != null)
-                srpBatchingConfig.ApplyToChunk(chunk);
-            else if (voxelMaterial != null)
-                chunk.SetSharedMaterial(voxelMaterial);
-            ApplyChunkLayer(chunk);
-            if (preload)
-            {
-                _preloaded.Add(coord);
-                chunk.SetRendererEnabled(false);
-                chunk.SetColliderEnabled(false);
-            }
-            else if (_preloaded.Contains(coord))
-            {
-                _preloaded.Remove(coord);
-            }
-
-            bool allocateDensity = saveManager != null && saveManager.SaveDensity;
-            chunk.Data.Allocate(worldGen.ChunkSize, Unity.Collections.Allocator.Persistent, allocateDensity);
-            double spawnStart = Time.realtimeSinceStartupAsDouble;
-            bool loadedFromCache = TryLoadFromCache(coord, chunk.Data);
-            bool loadedSnapshot = false;
-            if (!loadedFromCache)
-            {
-                if (hybridSave != null)
-                    loadedSnapshot = hybridSave.TryLoadSnapshot(coord, chunk.Data);
-                else if (saveManager != null && saveManager.LoadOnSpawn)
-                    loadedSnapshot = saveManager.TryLoadInto(coord, chunk.Data);
-            }
-            else
-            {
-                // Remove from cache after loading
-                if (_dataCache.TryGetValue(coord, out var cached))
-                {
-                    cached.Dispose();
-                    _dataCache.Remove(coord);
-                }
-            }
-
-            chunk.transform.position = new Vector3(coord.X * worldGen.ChunkSize, coord.Y * worldGen.ChunkSize, coord.Z * worldGen.ChunkSize) * VoxelConstants.VoxelSize;
-            _active[coord] = chunk;
-
-            bool applySafeSpawn = !loadedFromCache && !loadedSnapshot && _safeSpawnInitialized && worldGen.EnableSafeSpawn && !preload;
-            bool applyDelta = !loadedFromCache && !loadedSnapshot && hybridSave != null;
-
-            if (loadedFromCache || loadedSnapshot)
-            {
-                // Mods are already applied in cached data or snapshot, but we need to check for new mods
-                if (!loadedFromCache && hybridSave == null && modManager != null)
-                    modManager.ApplyModsToChunk(coord, chunk.Data);
-
-                // Always mesh saved chunks with full detail (lodStep=1) to avoid "cubes that don't transform back"
-                if (!ScheduleMeshForChunk(coord, spawnStart, 1))
-                    QueueRemesh(coord);
-            }
-            else
-            {
-                ScheduleGenJob(coord, chunk, spawnStart, applySafeSpawn, applyDelta);
-            }
-
-        }
-
         /// <summary>Initializes safe spawn region and optionally freezes player until anchor chunk is meshed. Assumes chunks/mesh will be generated; timeout unfreezes if not ready.</summary>
         void TryInitSafeSpawn()
         {
-            if (worldGen == null || !worldGen.EnableSafeSpawn || player == null) return;
-
-            int chunkSize = worldGen.ChunkSize;
-            float voxelSize = VoxelConstants.VoxelSize;
-            float sizeChunks = Mathf.Max(0.1f, worldGen.SafeSpawnSizeChunks);
-            _safeSpawnSizeVoxels = Mathf.Max(1, Mathf.RoundToInt(sizeChunks * chunkSize));
-
-            double scale = chunkSize * voxelSize;
-            int baseChunkX = VoxelMath.FloorToIntClamped(player.position.x / scale);
-            int baseChunkZ = VoxelMath.FloorToIntClamped(player.position.z / scale);
-
-            _safeSpawnWorldX0 = baseChunkX * chunkSize;
-            _safeSpawnWorldZ0 = baseChunkZ * chunkSize;
-
-            int maxH = 0;
-            for (int x = 0; x < _safeSpawnSizeVoxels; x++)
-            {
-                for (int z = 0; z < _safeSpawnSizeVoxels; z++)
-                {
-                    float h = ChunkGenerator.SampleHeightAt(_safeSpawnWorldX0 + x, _safeSpawnWorldZ0 + z, worldGen, noiseStack);
-                    int hi = Mathf.FloorToInt(h);
-                    if (hi > maxH) maxH = hi;
-                }
-            }
-
-            _safeSpawnBaseY = maxH + 1;
-            _safeSpawnTopY = _safeSpawnBaseY + Mathf.Max(1, worldGen.SafeSpawnThickness) - 1;
-            _safeSpawnInitialized = true;
-
-            _pendingSafeSpawnSnap = worldGen.SnapPlayerToSafeSpawn;
-            if (_pendingSafeSpawnSnap)
-            {
-                int centerX = _safeSpawnWorldX0 + _safeSpawnSizeVoxels / 2;
-                int centerZ = _safeSpawnWorldZ0 + _safeSpawnSizeVoxels / 2;
-                int anchorY = _safeSpawnBaseY;
-                _safeSpawnAnchorCoord = new ChunkCoord(
-                    Mathf.FloorToInt((float)centerX / chunkSize),
-                    Mathf.FloorToInt((float)anchorY / chunkSize),
-                    Mathf.FloorToInt((float)centerZ / chunkSize));
-                _waitingSafeSpawnMesh = true;
-                _safeSpawnWaitStart = Time.realtimeSinceStartupAsDouble;
-                SetPlayerFrozen(true);
-            }
+            _safeSpawn?.TryInitSafeSpawn();
         }
 
         bool ApplySafeSpawnToChunk(Chunk chunk, ChunkCoord coord)
         {
-            int chunkSize = worldGen.ChunkSize;
-            int worldX0 = coord.X * chunkSize;
-            int worldZ0 = coord.Z * chunkSize;
-            int worldX1 = worldX0 + chunkSize - 1;
-            int worldZ1 = worldZ0 + chunkSize - 1;
-
-            int spawnX1 = _safeSpawnWorldX0 + _safeSpawnSizeVoxels - 1;
-            int spawnZ1 = _safeSpawnWorldZ0 + _safeSpawnSizeVoxels - 1;
-
-            if (worldX1 < _safeSpawnWorldX0 || worldX0 > spawnX1) return false;
-            if (worldZ1 < _safeSpawnWorldZ0 || worldZ0 > spawnZ1) return false;
-
-            int worldY0 = coord.Y * chunkSize;
-            int worldY1 = worldY0 + chunkSize - 1;
-            if (worldY1 < _safeSpawnBaseY || worldY0 > _safeSpawnTopY) return false;
-
-            int matIndex = worldGen.SafeSpawnMaterialIndex <= 0
-                ? 200
-                : Mathf.Clamp(worldGen.SafeSpawnMaterialIndex, 1, ushort.MaxValue);
-            ushort mat = (ushort)matIndex;
-
-            int startX = Mathf.Max(worldX0, _safeSpawnWorldX0);
-            int endX = Mathf.Min(worldX1, spawnX1);
-            int startZ = Mathf.Max(worldZ0, _safeSpawnWorldZ0);
-            int endZ = Mathf.Min(worldZ1, spawnZ1);
-            int startY = Mathf.Max(worldY0, _safeSpawnBaseY);
-            int endY = Mathf.Min(worldY1, _safeSpawnTopY);
-
-            for (int wx = startX; wx <= endX; wx++)
-            {
-                int lx = wx - worldX0;
-                for (int wz = startZ; wz <= endZ; wz++)
-                {
-                    int lz = wz - worldZ0;
-                    for (int wy = startY; wy <= endY; wy++)
-                    {
-                        int ly = wy - worldY0;
-                        int idx = chunk.Data.Index(lx, ly, lz);
-                        chunk.Data.Materials[idx] = mat;
-                    }
-                }
-            }
-            return true;
+            return _safeSpawn != null && _safeSpawn.ApplySafeSpawnToChunk(chunk, coord);
         }
 
         bool ReapplySafeSpawnToChunk(Chunk chunk, ChunkCoord coord, out bool changed)
         {
-            changed = false;
-            if (worldGen == null || !worldGen.EnableSafeSpawn) return false;
-
-            int chunkSize = worldGen.ChunkSize;
-            int worldX0 = coord.X * chunkSize;
-            int worldZ0 = coord.Z * chunkSize;
-            int worldX1 = worldX0 + chunkSize - 1;
-            int worldZ1 = worldZ0 + chunkSize - 1;
-
-            int spawnX1 = _safeSpawnWorldX0 + _safeSpawnSizeVoxels - 1;
-            int spawnZ1 = _safeSpawnWorldZ0 + _safeSpawnSizeVoxels - 1;
-
-            if (worldX1 < _safeSpawnWorldX0 || worldX0 > spawnX1) return false;
-            if (worldZ1 < _safeSpawnWorldZ0 || worldZ0 > spawnZ1) return false;
-
-            int worldY0 = coord.Y * chunkSize;
-            int worldY1 = worldY0 + chunkSize - 1;
-            if (worldY1 < _safeSpawnBaseY || worldY0 > _safeSpawnTopY) return false;
-
-            int matIndex = worldGen.SafeSpawnMaterialIndex <= 0
-                ? 200
-                : Mathf.Clamp(worldGen.SafeSpawnMaterialIndex, 1, ushort.MaxValue);
-            ushort mat = (ushort)matIndex;
-
-            int startX = Mathf.Max(worldX0, _safeSpawnWorldX0);
-            int endX = Mathf.Min(worldX1, spawnX1);
-            int startZ = Mathf.Max(worldZ0, _safeSpawnWorldZ0);
-            int endZ = Mathf.Min(worldZ1, spawnZ1);
-            int startY = Mathf.Max(worldY0, _safeSpawnBaseY);
-            int endY = Mathf.Min(worldY1, _safeSpawnTopY);
-
-            for (int wx = startX; wx <= endX; wx++)
+            if (_safeSpawn == null)
             {
-                int lx = wx - worldX0;
-                for (int wz = startZ; wz <= endZ; wz++)
-                {
-                    int lz = wz - worldZ0;
-                    for (int wy = startY; wy <= endY; wy++)
-                    {
-                        int ly = wy - worldY0;
-                        int idx = chunk.Data.Index(lx, ly, lz);
-                        if (chunk.Data.Materials[idx] != mat)
-                        {
-                            chunk.Data.Materials[idx] = mat;
-                            changed = true;
-                        }
-                    }
-                }
+                changed = false;
+                return false;
             }
-
-            return true;
+            return _safeSpawn.ReapplySafeSpawnToChunk(chunk, coord, out changed);
         }
 
         void SnapPlayerToSafeSpawn()
         {
-            if (player == null) return;
-            float voxelSize = VoxelConstants.VoxelSize;
-            float cx = (_safeSpawnWorldX0 + _safeSpawnSizeVoxels * 0.5f) * voxelSize;
-            float cz = (_safeSpawnWorldZ0 + _safeSpawnSizeVoxels * 0.5f) * voxelSize;
-            float surfaceY = (_safeSpawnTopY + 1) * voxelSize;
-
-            float y = surfaceY + 0.1f;
-            var cc = player.GetComponent<CharacterController>();
-            if (cc == null)
-                cc = player.GetComponentInChildren<CharacterController>();
-
-            if (cc != null)
-            {
-                float bottomOffset = (cc.height * 0.5f) - cc.center.y;
-                y = surfaceY + bottomOffset + 0.05f;
-            }
-
-            player.position = new Vector3(cx, y, cz);
+            _safeSpawn?.SnapPlayerToSafeSpawn();
         }
 
-        void RemoveChunk(ChunkCoord coord)
-        {
-            if (!_active.TryGetValue(coord, out var chunk)) return;
-            _active.Remove(coord);
-            _meshedOnce.Remove(coord);
-            _preloaded.Remove(coord);
-            _preloadSet.Remove(coord);
-            if (hybridSave != null)
-            {
-                hybridSave.HandleChunkUnloaded(coord, chunk.Data);
-            }
-            else
-            {
-                if (saveManager != null && saveManager.SaveOnUnload)
-                    saveManager.EnqueueSave(coord, chunk.Data);
-                if (modManager != null)
-                    modManager.HandleChunkUnloaded(coord);
-            }
-
-            // Cache chunk data in RAM before disposing
-            if (enableDataCache && chunk.Data.IsCreated)
-            {
-                CacheChunkData(coord, chunk.Data);
-            }
-
-            if (chunk.Data.IsCreated) chunk.Data.Dispose();
-            ReleaseMeshCacheForChunk(coord);
-            ReleaseFaceCacheForChunk(coord);
-            _neighborDirtyFaces.Remove(coord);
-            _faceRemeshSet.Remove(coord);
-            if (svoManager != null)
-                svoManager.ReleaseForChunk(coord);
-            if (_pendingCachedMeshes.ContainsKey(coord))
-                _pendingCachedMeshes.Remove(coord);
-
-            // Очистити pending mesh job якщо чанк в черзі інтеграції
-            lock (_integrationLock)
-            {
-                if (_integrationSet.Contains(coord))
-                    _integrationSet.Remove(coord);
-            }
-            if (_pendingMeshJobs.TryGetValue(coord, out var meshJob))
-            {
-                meshJob.Dispose();
-                _pendingMeshJobs.Remove(coord);
-            }
-
-            _pool.Return(chunk);
-            RebuildNeighbors(coord);
-        }
-
-        void CacheChunkData(ChunkCoord coord, ChunkData data)
-        {
-            if (!enableDataCache) return;
-            if (maxCachedChunks <= 0) return;
-            if (maxCacheOpsPerFrame > 0 && _cacheOpsThisFrame >= maxCacheOpsPerFrame) return;
-
-            int cacheCap = maxCachedChunks;
-            if (memoryPressureThresholdMb > 0)
-            {
-#if UNITY_EDITOR || true
-                long memMb = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / (1024 * 1024);
-                if (memMb > memoryPressureThresholdMb)
-                    cacheCap = Mathf.Max(1, maxCachedChunks / 2);
-#endif
-            }
-
-            while (_dataCache.Count >= cacheCap && _dataCache.Count > 0)
-            {
-                var first = default(ChunkCoord);
-                foreach (var key in _dataCache.Keys)
-                {
-                    first = key;
-                    break;
-                }
-                if (_dataCache.TryGetValue(first, out var oldCached))
-                {
-                    oldCached.Dispose();
-                    _dataCache.Remove(first);
-                }
-            }
-
-            // Cache the data
-            var cached = new CachedChunkData();
-            cached.CopyFrom(data);
-            _dataCache[coord] = cached;
-            _cacheOpsThisFrame++;
-        }
-
-        ulong ComputeMeshCacheHash(NativeArray<ushort> materials, int size, NeighborDataBuffers neighbors, int lodStep = 1, NativeArray<float> density = default)
-        {
-            if (!materials.IsCreated || materials.Length == 0) return 0ul;
-            ulong hash = 1469598103934665603ul;
-            HashArray(materials, ref hash);
-
-            var data = neighbors.Data;
-            if (data.HasNegX) HashNeighborFace(neighbors.NegX, size, 0, size - 1, ref hash);
-            if (data.HasPosX) HashNeighborFace(neighbors.PosX, size, 0, 0, ref hash);
-            if (data.HasNegY) HashNeighborFace(neighbors.NegY, size, 1, size - 1, ref hash);
-            if (data.HasPosY) HashNeighborFace(neighbors.PosY, size, 1, 0, ref hash);
-            if (data.HasNegZ) HashNeighborFace(neighbors.NegZ, size, 2, size - 1, ref hash);
-            if (data.HasPosZ) HashNeighborFace(neighbors.PosZ, size, 2, 0, ref hash);
-
-            hash ^= (ulong)materials.Length;
-            hash ^= (ulong)lodStep;
-            hash *= 1099511628211ul;
-            if (density.IsCreated && density.Length == materials.Length)
-            {
-                for (int i = 0; i < density.Length; i++)
-                {
-                    hash ^= (ulong)(density[i] * 0xFFFFFF);
-                    hash *= 1099511628211ul;
-                }
-            }
-            return hash;
-        }
-
-        void HashArray(NativeArray<ushort> data, ref ulong hash)
-        {
-            if (!data.IsCreated || data.Length == 0) return;
-            for (int i = 0; i < data.Length; i++)
-            {
-                hash ^= data[i];
-                hash *= 1099511628211ul;
-            }
-        }
-
-        void HashNeighborFace(NativeArray<ushort> data, int size, int axis, int index, ref ulong hash)
-        {
-            if (!data.IsCreated || data.Length == 0) return;
-            if (axis == 0)
-            {
-                for (int z = 0; z < size; z++)
-                {
-                    int zBase = size * size * z;
-                    for (int y = 0; y < size; y++)
-                    {
-                        int idx = index + size * y + zBase;
-                        hash ^= data[idx];
-                        hash *= 1099511628211ul;
-                    }
-                }
-                return;
-            }
-            if (axis == 1)
-            {
-                int yBase = size * index;
-                for (int z = 0; z < size; z++)
-                {
-                    int zBase = size * size * z;
-                    for (int x = 0; x < size; x++)
-                    {
-                        int idx = x + yBase + zBase;
-                        hash ^= data[idx];
-                        hash *= 1099511628211ul;
-                    }
-                }
-                return;
-            }
-
-            int zIndexBase = size * size * index;
-            for (int y = 0; y < size; y++)
-            {
-                int yBase = size * y + zIndexBase;
-                for (int x = 0; x < size; x++)
-                {
-                    int idx = x + yBase;
-                    hash ^= data[idx];
-                    hash *= 1099511628211ul;
-                }
-            }
-        }
-
-        bool HasAllNeighbors(GreedyMesher.NeighborData data)
-        {
-            return data.HasNegX && data.HasPosX
-                && data.HasNegY && data.HasPosY
-                && data.HasNegZ && data.HasPosZ;
-        }
-
-        bool TryQueueCachedMesh(ChunkCoord coord, ulong hash, Mesh mesh)
-        {
-            // Validate mesh before queuing - must have vertices
-            if (mesh == null || mesh.vertexCount == 0)
-                return false;
-            // Validate that chunk still exists and has data
-            if (!_active.TryGetValue(coord, out var chunk) || !chunk.Data.IsCreated)
-                return false;
-
-            lock (_integrationLock)
-            {
-                if (_integrationSet.Contains(coord))
-                    return false;
-                _pendingCachedMeshes[coord] = new PendingCachedMesh
-                {
-                    Mesh = mesh,
-                    Hash = hash,
-                    Epoch = _streamingEpoch
-                };
-                _integrationQueue.Enqueue(coord);
-                _integrationSet.Add(coord);
-            }
-            return true;
-        }
-
-        void RegisterMeshCacheForChunk(ChunkCoord coord, ulong hash, Mesh mesh, bool markShared, bool addCollider)
-        {
-            if (mesh == null) return;
-
-            if (_chunkMeshHashes.TryGetValue(coord, out var oldHash))
-            {
-                if (oldHash == hash)
-                {
-                    if (enableMeshCache && maxMeshCacheEntries > 0 && _meshCache.TryGetValue(hash, out var sameEntry))
-                    {
-                        sameEntry.LastUsedFrame = Time.frameCount;
-                        _meshCache[hash] = sameEntry;
-                    }
-                    if (markShared && _active.TryGetValue(coord, out var sameChunk))
-                        sameChunk.ApplySharedMesh(mesh, addCollider);
-                    return;
-                }
-                ReleaseMeshCacheForChunk(coord);
-            }
-
-            _chunkMeshHashes[coord] = hash;
-
-            if (enableMeshCache && maxMeshCacheEntries > 0)
-            {
-                if (_meshCache.TryGetValue(hash, out var entry))
-                {
-                    entry.RefCount++;
-                    entry.LastUsedFrame = Time.frameCount;
-                    _meshCache[hash] = entry;
-                }
-                else
-                {
-                    _meshCache[hash] = new CachedMeshEntry
-                    {
-                        Mesh = mesh,
-                        RefCount = 1,
-                        LastUsedFrame = Time.frameCount
-                    };
-                }
-                EvictMeshCacheIfNeeded();
-            }
-
-            if (markShared && _active.TryGetValue(coord, out var chunk))
-                chunk.ApplySharedMesh(mesh, addCollider);
-        }
-
-        void ReleaseMeshCacheForChunk(ChunkCoord coord)
-        {
-            if (!_chunkMeshHashes.TryGetValue(coord, out var hash)) return;
-            _chunkMeshHashes.Remove(coord);
-
-            if (_meshCache.TryGetValue(hash, out var entry))
-            {
-                entry.RefCount = Mathf.Max(0, entry.RefCount - 1);
-                _meshCache[hash] = entry;
-                if (entry.RefCount == 0 && _meshCache.Count > maxMeshCacheEntries)
-                    EvictMeshCacheIfNeeded();
-            }
-        }
-
-        void EvictMeshCacheIfNeeded()
-        {
-            if (maxMeshCacheEntries <= 0 || _meshCache.Count <= maxMeshCacheEntries) return;
-            int evictBudget = meshCacheEvictPerFrame > 0 ? meshCacheEvictPerFrame : int.MaxValue;
-            if (memoryPressureThresholdMb > 0)
-            {
-#if UNITY_EDITOR || true
-                long memMb = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / (1024 * 1024);
-                if (memMb > memoryPressureThresholdMb)
-                    evictBudget *= 2;
-#endif
-            }
-
-            while (_meshCache.Count > maxMeshCacheEntries && evictBudget-- > 0)
-            {
-                bool found = false;
-                ulong bestKey = 0;
-                int bestFrame = int.MaxValue;
-                int bestVertexCount = -1;
-
-                foreach (var kvp in _meshCache)
-                {
-                    if (kvp.Value.RefCount > 0) continue;
-                    int vertexCount = kvp.Value.Mesh != null ? kvp.Value.Mesh.vertexCount : 0;
-                    // Prefer evicting largest meshes (size-based) to free more memory; then LRU
-                    bool better = !found ||
-                        vertexCount > bestVertexCount ||
-                        (vertexCount == bestVertexCount && kvp.Value.LastUsedFrame < bestFrame);
-                    if (better)
-                    {
-                        found = true;
-                        bestKey = kvp.Key;
-                        bestFrame = kvp.Value.LastUsedFrame;
-                        bestVertexCount = vertexCount;
-                    }
-                }
-
-                if (!found) break;
-                RemoveMeshCacheEntry(bestKey);
-            }
-        }
-
-        void RemoveMeshCacheEntry(ulong hash)
-        {
-            if (_meshCache.TryGetValue(hash, out var entry))
-            {
-                if (entry.Mesh != null)
-                    Destroy(entry.Mesh);
-                _meshCache.Remove(hash);
-            }
-        }
-
-        bool TryLoadFromCache(ChunkCoord coord, ChunkData data)
-        {
-            if (!enableDataCache) return false;
-            if (!_dataCache.TryGetValue(coord, out var cached)) return false;
-            if (!cached.IsValid) return false;
-            // Invalidate cache if chunk was modified (mod/save) after being cached
-            if (modManager != null && modManager.GetDeltaCount(coord) > 0)
-            {
-                cached.Dispose();
-                _dataCache.Remove(coord);
-                return false;
-            }
-
-            cached.CopyTo(data);
-            return true;
-        }
-
-        public bool TryGetChunk(ChunkCoord coord, out Chunk chunk)
-        {
-            if (!_active.TryGetValue(coord, out chunk)) return false;
-            if (chunk == null) return false;
-            if (_genJobs.ContainsKey(coord))
-            {
-                chunk = null;
-                return false;
-            }
-            return true;
-        }
-
-        public void RequestRemesh(ChunkCoord coord, bool includeNeighbors)
-        {
-            QueueRemesh(coord);
-            if (!includeNeighbors || _requestRemeshDepth >= maxRequestRemeshNeighborsDepth) return;
-            int columnChunks = ColumnChunks;
-            if (columnChunks <= 0) return;
-            _requestRemeshDepth++;
-            try
-            {
-                var n = new ChunkCoord(coord.X + 1, coord.Y, coord.Z);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-                n = new ChunkCoord(coord.X - 1, coord.Y, coord.Z);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-                n = new ChunkCoord(coord.X, coord.Y + 1, coord.Z);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-                n = new ChunkCoord(coord.X, coord.Y - 1, coord.Z);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-                n = new ChunkCoord(coord.X, coord.Y, coord.Z + 1);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-                n = new ChunkCoord(coord.X, coord.Y, coord.Z - 1);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-            }
-            finally { _requestRemeshDepth--; }
-        }
-
-        void ApplyChunkLayer(Chunk chunk)
-        {
-            if (chunk == null) return;
-            if (string.IsNullOrWhiteSpace(chunkLayerName)) return;
-            int layer = LayerMask.NameToLayer(chunkLayerName);
-            if (layer < 0) return;
-            SetLayerRecursively(chunk.transform, layer);
-        }
-
-        static void SetLayerRecursively(Transform t, int layer)
-        {
-            if (t == null) return;
-            t.gameObject.layer = layer;
-            for (int i = 0; i < t.childCount; i++)
-                SetLayerRecursively(t.GetChild(i), layer);
-        }
-
-        void RebuildNeighbors(ChunkCoord coord)
-        {
-            if (_rebuildNeighborsDepth >= maxRebuildNeighborsDepth) return;
-            _rebuildNeighborsDepth++;
-            try
-            {
-                RebuildNeighborsInner(coord);
-            }
-            finally { _rebuildNeighborsDepth--; }
-        }
-
-        void RebuildNeighborsInner(ChunkCoord coord)
-        {
-            int columnChunks = worldGen != null ? worldGen.ColumnChunks : 4;
-            var neighbors = new (ChunkCoord coord, int faceIndex)[]
-            {
-                (new ChunkCoord(coord.X + 1, coord.Y, coord.Z), 0),  // neighbor at +X: its NegX face touches us
-                (new ChunkCoord(coord.X - 1, coord.Y, coord.Z), 1),  // neighbor at -X: its PosX face touches us
-                (new ChunkCoord(coord.X, coord.Y + 1, coord.Z), 2),  // neighbor at +Y: its NegY face touches us
-                (new ChunkCoord(coord.X, coord.Y - 1, coord.Z), 3),  // neighbor at -Y: its PosY face touches us
-                (new ChunkCoord(coord.X, coord.Y, coord.Z + 1), 4),  // neighbor at +Z: its NegZ face touches us
-                (new ChunkCoord(coord.X, coord.Y, coord.Z - 1), 5)   // neighbor at -Z: its PosZ face touches us
-            };
-
-            foreach (var (neighbor, faceIndex) in neighbors)
-            {
-                if (neighbor.Y < 0 || neighbor.Y >= columnChunks) continue;
-                if (!_active.ContainsKey(neighbor)) continue;
-                if (IsChunkGenerating(neighbor)) continue;
-                if (_meshJobs.ContainsKey(neighbor)) continue;
-                if (IsInIntegrationSet(neighbor)) continue;
-                if (_remeshSet.Contains(neighbor)) continue;
-
-                if (enableMeshCache)
-                {
-                    ReleaseMeshCacheForChunk(neighbor);
-                    if (_pendingCachedMeshes.ContainsKey(neighbor))
-                    {
-                        _pendingCachedMeshes.Remove(neighbor);
-                        lock (_integrationLock)
-                        {
-                            if (_integrationSet.Contains(neighbor))
-                                _integrationSet.Remove(neighbor);
-                        }
-                    }
-                }
-
-                if (enableEdgeOnlyRemesh)
-                    InvalidateNeighborFace(neighbor, faceIndex);
-                else
-                    QueueRemesh(neighbor);
-            }
-        }
-
-        void InvalidateNeighborFace(ChunkCoord neighbor, int faceIndex)
-        {
-            if (_meshJobs.ContainsKey(neighbor)) return;
-            if (_faceMeshJobs.ContainsKey(neighbor)) return;
-            if (_faceRemeshSet.Contains(neighbor))
-            {
-                _neighborDirtyFaces.TryGetValue(neighbor, out int existing);
-                _neighborDirtyFaces[neighbor] = existing | (1 << faceIndex);
-                return;
-            }
-            _neighborDirtyFaces[neighbor] = 1 << faceIndex;
-            _faceRemeshSet.Add(neighbor);
-            _faceRemeshQueue.Enqueue(neighbor);
-        }
-
-        void ReleaseFaceCacheForChunk(ChunkCoord coord)
-        {
-            if (!_chunkFaceCache.TryGetValue(coord, out var arr)) return;
-            _chunkFaceCache.Remove(coord);
-            if (arr != null)
-            {
-                for (int i = 0; i < arr.Length; i++)
-                {
-                    if (arr[i].Vertices.IsCreated)
-                        arr[i].Dispose();
-                }
-            }
-        }
-
-        void QueueRemesh(ChunkCoord coord)
-        {
-            if (!_active.ContainsKey(coord)) return;
-            if (_meshJobs.ContainsKey(coord)) return; // One remesh per chunk: skip if mesh job already in flight
-            if (_remeshSet.Contains(coord)) return;   // Already queued, avoid duplicate
-            if (IsInIntegrationSet(coord) || _pendingCachedMeshes.ContainsKey(coord))
-            {
-                _remeshAfterIntegration.Add(coord);   // Defer until integration done
-                return;
-            }
-
-            // Invariant: skip remesh if voxel data (and neighbors) unchanged
-            if (_active.TryGetValue(coord, out var chunk) && chunk.Data.IsCreated && !chunk.UsesSvo)
-            {
-                int lodStep = Mathf.Max(1, chunk.LodStep);
-                if (lodStep == 1 && _chunkMeshHashes.TryGetValue(coord, out ulong storedHash))
-                {
-                    var neighbors = GatherNeighborCopies(coord);
-                    if (HasAllNeighbors(neighbors.Data))
-                    {
-                        ulong currentHash = ComputeMeshCacheHash(chunk.Data.Materials, chunk.Data.Size, neighbors, 1, chunk.Data.Density);
-                        neighbors.Dispose();
-                        if (currentHash == storedHash)
-                            return;
-                    }
-                    else
-                    {
-                        neighbors.Dispose();
-                    }
-                }
-            }
-
-            if (enableEdgeOnlyRemesh)
-            {
-                ReleaseFaceCacheForChunk(coord);
-                _neighborDirtyFaces.Remove(coord);
-                _faceRemeshSet.Remove(coord);
-            }
-            if (svoManager != null)
-                svoManager.ReleaseForChunk(coord);
-            if (enableMeshCache)
-            {
-                ReleaseMeshCacheForChunk(coord);
-                var n = new[] {
-                    new ChunkCoord(coord.X + 1, coord.Y, coord.Z), new ChunkCoord(coord.X - 1, coord.Y, coord.Z),
-                    new ChunkCoord(coord.X, coord.Y + 1, coord.Z), new ChunkCoord(coord.X, coord.Y - 1, coord.Z),
-                    new ChunkCoord(coord.X, coord.Y, coord.Z + 1), new ChunkCoord(coord.X, coord.Y, coord.Z - 1)
-                };
-                for (int i = 0; i < 6; i++)
-                    ReleaseMeshCacheForChunk(n[i]);
-            }
-            _remeshSet.Add(coord);
-        }
-
-        /// <summary>Extract coord with minimum distance to center from _remeshSet (min-heap semantics).</summary>
-        bool TryDequeueClosestRemesh(ChunkCoord center, out ChunkCoord coord)
-        {
-            coord = default;
-            if (_remeshSet.Count == 0) return false;
-
-            ChunkCoord best = default;
-            int bestDistSq = int.MaxValue;
-            foreach (var c in _remeshSet)
-            {
-                int dx = c.X - center.X;
-                int dz = c.Z - center.Z;
-                int d = dx * dx + dz * dz; // 2D distance (XZ), same as IsWithinLoadRadius
-                if (d < bestDistSq)
-                {
-                    bestDistSq = d;
-                    best = c;
-                }
-            }
-            _remeshSet.Remove(best);
-            coord = best;
-            return true;
-        }
     }
 }
 

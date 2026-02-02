@@ -60,5 +60,23 @@ namespace TerraVoxel.Voxel.Streaming
             MeshData.Dispose();
         }
     }
+
+    /// <summary>Handle for face-only remesh job: Handle, MeshData, MaterialsCopy, Mask, Neighbors.</summary>
+    public struct FaceMeshJobHandle : IDisposable
+    {
+        public JobHandle Handle;
+        public MeshData MeshData;
+        public NativeArray<ushort> MaterialsCopy;
+        public NativeArray<GreedyMesher.MaskCell> Mask;
+        public NeighborDataBuffers Neighbors;
+
+        public void Dispose()
+        {
+            if (MaterialsCopy.IsCreated) MaterialsCopy.Dispose();
+            if (Mask.IsCreated) Mask.Dispose();
+            Neighbors.Dispose();
+            MeshData.Dispose();
+        }
+    }
 }
 

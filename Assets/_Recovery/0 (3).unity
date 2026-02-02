@@ -355,6 +355,7 @@ GameObject:
   - component: {fileID: 448214056}
   - component: {fileID: 448214058}
   - component: {fileID: 448214057}
+  - component: {fileID: 448214059}
   m_Layer: 0
   m_Name: ChunkManager
   m_TagString: Untagged
@@ -385,6 +386,7 @@ MonoBehaviour:
   maxSpawnsPerFrame: 20
   maxRemeshPerFrame: 12
   maxRemovalsPerFrame: 20
+  scaleJobsByProcessorCount: 1
   maxGenJobsInFlight: 12
   maxMeshJobsInFlight: 12
   maxIntegrationsPerFrame: 16
@@ -402,8 +404,9 @@ MonoBehaviour:
   pendingQueueCap: 16384
   pendingResetDistance: 12
   viewCone: {fileID: 448214056}
-  enableFullLod: 1
-  enableFarRangeLod: 1
+  enableFullLod: 0
+  initialLodFromDistance: 0
+  enableFarRangeLod: 0
   farRangeRadius: 20
   lodSettings: {fileID: 11400000, guid: 868f81b94f723684ea3dd726391b24e2, type: 2}
   maxLodTransitionsPerFrame: 40
@@ -416,6 +419,7 @@ MonoBehaviour:
     enabled: 0
     maxMsPerFrame: 3
   chunkLayerName: Terrain
+  srpBatchingConfig: {fileID: 0}
   voxelMaterial: {fileID: 0}
   voxelMaterialLibrary: {fileID: 0}
   saveManager: {fileID: 448214051}
@@ -445,6 +449,7 @@ MonoBehaviour:
   maxRebuildNeighborsDepth: 2
   maxRequestRemeshNeighborsDepth: 1
   enableEdgeOnlyRemesh: 1
+  maxFaceRemeshPerFrame: 1
   enableSeamSkirts: 1
   seamSkirtOffset: 0.002
 --- !u!4 &448214048
@@ -714,6 +719,20 @@ MonoBehaviour:
   maxRayDist: 200
   tickBudgetMs: 5
   useCoarseSphereCheck: 0
+--- !u!114 &448214059
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 448214046}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: 6e10156dbf603a04e8e1bbde59e73924, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Rendering.SrpBatchingConfig
+  voxelMaterial: {fileID: 2100000, guid: 9805a1810d2a6b741b09cd565a7136dc, type: 2}
+  voxelMaterialLibrary: {fileID: 11400000, guid: e1c398cf33139d64998e86159899320f, type: 2}
 --- !u!4 &492199355 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 2884546045553303299, guid: 691d201409042b143af4574240386e30, type: 3}

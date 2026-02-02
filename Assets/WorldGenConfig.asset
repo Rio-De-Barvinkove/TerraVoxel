@@ -13,7 +13,7 @@ MonoBehaviour:
   m_Name: WorldGenConfig
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Generation.WorldGenConfig
   Seed: 3
-  GeneratorVersion: 5
+  GeneratorVersion: 3
   ChunkSize: 32
   ColumnChunks: 4
   BaseHeight: 64

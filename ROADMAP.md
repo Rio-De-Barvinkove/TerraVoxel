@@ -84,13 +84,47 @@
 - [X] **Occlusion (харденінг):** ChunkOcclusionCuller lock _occluded, очищення застарілих записів (_activeCoordsThisTick), GetRaycastMask попередження про відсутній шар, документація AnyRayUnblocked/GetChunkBounds/RestoreAll.
 - [X] **ChunkPhysicsOptimizer:** lock _stateLock, tooltips (activeRadius/inactiveRadius, includeVerticalDistance, disablePreloaded), PruneMissingInner doc.
 - [X] **ChunkManager (документація):** моноліт/main thread summary, UpdateAdaptiveLimits/DropWorkQueues/MaybeDropWork/SetPlayerFrozen/ActivatePreloadedChunk/TryInitSafeSpawn/ProcessGenJobs/ProcessMeshJobs XML, work drop tooltips.
+- [X] **Priority near player:** при viewCone.DistanceOnly dequeue через TryFindClosestPending (поточна позиція гравця); distanceOnly=true за замовчуванням.
+- [X] **Initial LOD from distance:** у ProcessGenJobs спочатку ResolveLevel за відстанню — далекі чанки спавляться як SVO/None/Mesh за LOD, без LOD0 всюди.
+- [X] **SRP Batching:** SrpBatchingConfig (voxelMaterial, voxelMaterialLibrary, ApplyToChunk); ChunkManager підтримує srpBatchingConfig або legacy поля.
+- [X] **Edge-only remesh async:** ScheduleFaceRemeshJobAsync, ProcessFaceMeshJobs (без блокування main thread); face mask для інвалідованих граней; maxFaceRemeshPerFrame.
+- [X] **Job scaling:** scaleJobsByProcessorCount — maxGenJobsInFlight, maxMeshJobsInFlight, maxIntegrationsPerFrame масштабуються по SystemInfo.processorCount.
+- [X] **LOD (overflow/hysteresis):** ChunkLodLevel.MaxDistanceWithHysteresis; ChunkLodSettings ResolveLevel без overflow; OnValidate far-range warning (last level MaxDistance).
+- [X] **Empty chunk remesh fix:** HasAnySolid перевірка — порожні чанки не йдуть у нескінченний remesh, renderer/collider вимикаються.
+- [X] **RebuildNeighborsInner:** перевірка Y bounds (ColumnChunks) для сусідів; не чергує неіснуючі neighbor.
+- [X] **Seam skirts:** enableSeamSkirts, seamSkirtOffset для зменшення щілин на стиках чанків.
+- [X] **Pending membership:** _pendingSet.Add перед EnqueueWithPriority у MaintainRadius/RebuildPendingQueue; TryDequeuePending при DistanceOnly використовує TryFindClosestPending.
+- [X] **Модуляризація ChunkManager:** розбиття на модулі (ChunkLoader, ChunkJobsManager, ChunkIntegrationManager, ChunkLodManager, **ChunkCacheManager** — менеджер кешу, **ChunkManager.Neighbors** — partial, логіка сусідів без окремого класу, ChunkAdaptiveLimitsManager, ChunkWorkDropManager, ChunkSafeSpawnManager, ChunkPhysicsManager) та shared Context; ChunkManager залишається фасадом з fallback-реалізаціями.
 
 ---
 
-## Оптимізація:
+## Оптимізація (CPU — що залишилось):
 
 
 
+4. ProcessFullLod — обхід усіх активних чанків
+Що кадр обробляється вся множина _active, будуються upgrades/downgrades і сортування.
+Підхід: робити перевірку LOD не для всіх, а для підмножини (круг/зону навколо гравця), троттлинг по кадрах, можливо просторова структура для швидкого пошуку «чанків у радіусі».
+5. Occlusion culling
+Кожен кадр: перебір усіх активних, _candidates.Sort, raycasts.
+Підхід: hierarchical occlusion (перевіряти групи чанків), пропускати перевірку для чанків, що не змінили позицію/баунди, зменшити maxChecksPerFrame при великому навантаженні.
+6. SIMD у GreedyMesher
+Є int3/float2, але немає явної векторизації (обробка 4+ вокселів за ітерацію).
+Підхід: переписати внутрішній цикл з float4/int4 (обробка 4 вокселів за раз), покладаючись на Burst для SIMD.
+7. Integration lock
+lock (_integrationLock) при кожному dequeue — потенційний contention.
+Підхід: lock-free черга (наприклад, NativeQueue + однопоточний споживач), якщо можливо.
+8. Early exit в генерації
+Якщо чанк гарантовано повністю повітряний, можна не запускати повну генерацію.
+Підхід: швидка перевірка (наприклад, heightmap) перед Schedule — якщо весь обсяг у повітрі, пропускати Job.
+9. Chunk index packing
+ChunkCoord як struct з трьома int — більше даних у кеші.
+Підхід: упакувати в один ulong (Morton code або простий pack X,Y,Z), зменшити кеш-промахи.
+10. Frame budgeting
+Є StreamingTimeBudget, але не всюди використовується.
+Підхід: додати перевірки streamingBudget?.IsExceeded() у ProcessFullLod, occlusion, MaintainRadius і призупиняти роботу при перевищенні ліміту.
+
+## Чеклист оптимізацій (загальний, не всі реалізовані)
 9. Occlusion Culling (software)
 10. Hierarchical Occlusion Culling
 11. Portal Culling (печери)
@@ -202,7 +236,6 @@ P0 (високий пріоритет)
 - [ ] SaveLoadManager інтеграція — складність: середня.
 - [ ] Збереження інвентаря гравця — складність: середня.
 - [ ] Збереження позиції гравця — складність: низька.
-- [ ] Priority near player (distance-based spawn order) — складність: низька.
 P1 (середній пріоритет)
 - [ ] Екран "Створити світ" — складність: середня.
 - [ ] Екран "Список світів" — складність: середня.
