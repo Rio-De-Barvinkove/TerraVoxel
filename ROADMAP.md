@@ -100,30 +100,6 @@
 
 ## Оптимізація (CPU — що залишилось):
 
-
-
-4. ProcessFullLod — обхід усіх активних чанків
-Що кадр обробляється вся множина _active, будуються upgrades/downgrades і сортування.
-Підхід: робити перевірку LOD не для всіх, а для підмножини (круг/зону навколо гравця), троттлинг по кадрах, можливо просторова структура для швидкого пошуку «чанків у радіусі».
-5. Occlusion culling
-Кожен кадр: перебір усіх активних, _candidates.Sort, raycasts.
-Підхід: hierarchical occlusion (перевіряти групи чанків), пропускати перевірку для чанків, що не змінили позицію/баунди, зменшити maxChecksPerFrame при великому навантаженні.
-6. SIMD у GreedyMesher
-Є int3/float2, але немає явної векторизації (обробка 4+ вокселів за ітерацію).
-Підхід: переписати внутрішній цикл з float4/int4 (обробка 4 вокселів за раз), покладаючись на Burst для SIMD.
-7. Integration lock
-lock (_integrationLock) при кожному dequeue — потенційний contention.
-Підхід: lock-free черга (наприклад, NativeQueue + однопоточний споживач), якщо можливо.
-8. Early exit в генерації
-Якщо чанк гарантовано повністю повітряний, можна не запускати повну генерацію.
-Підхід: швидка перевірка (наприклад, heightmap) перед Schedule — якщо весь обсяг у повітрі, пропускати Job.
-9. Chunk index packing
-ChunkCoord як struct з трьома int — більше даних у кеші.
-Підхід: упакувати в один ulong (Morton code або простий pack X,Y,Z), зменшити кеш-промахи.
-10. Frame budgeting
-Є StreamingTimeBudget, але не всюди використовується.
-Підхід: додати перевірки streamingBudget?.IsExceeded() у ProcessFullLod, occlusion, MaintainRadius і призупиняти роботу при перевищенні ліміту.
-
 ## Чеклист оптимізацій (загальний, не всі реалізовані)
 9. Occlusion Culling (software)
 10. Hierarchical Occlusion Culling

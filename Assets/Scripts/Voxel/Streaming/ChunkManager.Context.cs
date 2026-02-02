@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
@@ -141,8 +142,8 @@ namespace TerraVoxel.Voxel.Streaming
             internal List<ChunkCoord> GenCompleted => _owner._genCompleted;
             internal List<ChunkCoord> MeshCompleted => _owner._meshCompleted;
             internal HashSet<ChunkCoord> MeshedOnce => _owner._meshedOnce;
-            internal Queue<ChunkCoord> IntegrationQueue => _owner._integrationQueue;
-            internal HashSet<ChunkCoord> IntegrationSet => _owner._integrationSet;
+            internal ConcurrentQueue<ChunkCoord> IntegrationQueue => _owner._integrationQueue;
+            internal ConcurrentDictionary<ChunkCoord, byte> IntegrationSet => _owner._integrationSet;
             internal Dictionary<ChunkCoord, ChunkMeshJobHandle> PendingMeshJobs => _owner._pendingMeshJobs;
             internal Dictionary<ChunkCoord, PendingCachedMesh> PendingCachedMeshes => _owner._pendingCachedMeshes;
             internal Dictionary<ulong, CachedMeshEntry> MeshCache => _owner._meshCache;
@@ -209,7 +210,6 @@ namespace TerraVoxel.Voxel.Streaming
             internal bool SavedCharacterControllerEnabled { get => _owner._savedCharacterControllerEnabled; set => _owner._savedCharacterControllerEnabled = value; }
             internal double SafeSpawnWaitStart { get => _owner._safeSpawnWaitStart; set => _owner._safeSpawnWaitStart = value; }
 
-            internal object IntegrationLock => _owner._integrationLock;
             internal int RebuildNeighborsDepth { get => _owner._rebuildNeighborsDepth; set => _owner._rebuildNeighborsDepth = value; }
             internal int RequestRemeshDepth { get => _owner._requestRemeshDepth; set => _owner._requestRemeshDepth = value; }
 

@@ -152,19 +152,15 @@ namespace TerraVoxel.Voxel.Streaming
             if (!_active.TryGetValue(coord, out var chunk) || !chunk.Data.IsCreated)
                 return false;
 
-            lock (_integrationLock)
+            if (!_integrationSet.TryAdd(coord, 0))
+                return false;
+            _pendingCachedMeshes[coord] = new PendingCachedMesh
             {
-                if (_integrationSet.Contains(coord))
-                    return false;
-                _pendingCachedMeshes[coord] = new PendingCachedMesh
-                {
-                    Mesh = mesh,
-                    Hash = hash,
-                    Epoch = _streamingEpoch
-                };
-                _integrationQueue.Enqueue(coord);
-                _integrationSet.Add(coord);
-            }
+                Mesh = mesh,
+                Hash = hash,
+                Epoch = _streamingEpoch
+            };
+            _integrationQueue.Enqueue(coord);
             return true;
         }
 

@@ -19,6 +19,8 @@ namespace TerraVoxel.Voxel.Occlusion
         [SerializeField] bool raycastOcclusion = false;
         [Tooltip("Fixed cap per frame; may cause uneven FPS with many chunks. Consider adaptive budget later.")]
         [SerializeField] int maxChecksPerFrame = 256;
+        [Tooltip("Reserve this many checks per frame to re-test occluded chunks so they can become visible again when the player looks back. Prevents distant 'holes' after returning.")]
+        [SerializeField] int recheckOccludedPerFrame = 64;
         [SerializeField] LayerMask occluderMask = ~0;
         [Tooltip("Layer name for raycast; if missing, occluderMask is used (warning logged once).")]
         [SerializeField] string occluderLayerName = "Terrain";
@@ -112,13 +114,16 @@ namespace TerraVoxel.Voxel.Occlusion
 
             _candidates.Sort((a, b) => a.DistSq.CompareTo(b.DistSq));
 
-            // _candidates reused each frame (Clear + Add); Candidate is struct, no per-item allocation.
+            int recheckBudget = Mathf.Clamp(recheckOccludedPerFrame, 0, maxChecksPerFrame > 0 ? maxChecksPerFrame : int.MaxValue);
+            int mainBudget = maxChecksPerFrame > 0 ? Mathf.Max(0, maxChecksPerFrame - recheckBudget) : int.MaxValue;
+
             float startTime = Time.realtimeSinceStartup;
             float budgetSec = tickBudgetMs > 0 ? tickBudgetMs * 0.001f : float.MaxValue;
             int checks = 0;
 
             for (int i = 0; i < _candidates.Count; i++)
             {
+                if (mainBudget > 0 && checks >= mainBudget) break;
                 if (maxChecksPerFrame > 0 && checks >= maxChecksPerFrame) break;
                 if (Time.realtimeSinceStartup - startTime > budgetSec) break;
 
@@ -157,6 +162,53 @@ namespace TerraVoxel.Voxel.Occlusion
                         chunk.SetRendererEnabled(true);
                 }
                 checks++;
+            }
+
+            // Re-check some occluded chunks so they can become visible again when the player looks back (avoids persistent "hole").
+            if (recheckBudget > 0 && checks < maxChecksPerFrame)
+            {
+                lock (_occludedLock)
+                {
+                    _restoreBuffer.Clear();
+                    int n = 0;
+                    foreach (var c in _occluded)
+                    {
+                        if (n >= recheckBudget) break;
+                        if (!_activeCoordsThisTick.Contains(c)) continue;
+                        _restoreBuffer.Add(c);
+                        n++;
+                    }
+                }
+                if (_restoreBuffer.Count == 0) return;
+                foreach (var coord in _restoreBuffer)
+                {
+                    if (maxChecksPerFrame > 0 && checks >= maxChecksPerFrame) break;
+                    if (Time.realtimeSinceStartup - startTime > budgetSec) break;
+                    if (!manager.TryGetChunk(coord, out var chunk) || chunk == null) continue;
+
+                    Bounds bounds = GetChunkBounds(chunk, manager.ChunkSize);
+                    bool visible = true;
+                    if (frustumCulling && planes != null)
+                    {
+                        if (!GeometryUtility.TestPlanesAABB(planes, bounds))
+                            visible = false;
+                    }
+                    if (visible && raycastOcclusion)
+                    {
+                        float distSq = (chunk.transform.position - camPos).sqrMagnitude;
+                        if (distSq <= _maxRayDistSq && !chunk.UsesSvo && chunk.LodStep <= 1)
+                        {
+                            if (!AnyRayUnblocked(camPos, bounds, raycastMask))
+                                visible = false;
+                        }
+                    }
+                    if (visible)
+                    {
+                        lock (_occludedLock) { _occluded.Remove(coord); }
+                        chunk.SetRendererEnabled(true);
+                        checks++;
+                    }
+                }
             }
         }
 

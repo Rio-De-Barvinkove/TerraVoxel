@@ -232,20 +232,16 @@ namespace TerraVoxel.Voxel.Streaming
                     }
                 }
 
-                lock (_integrationLock)
+                if (_integrationSet.TryAdd(coord, 0))
                 {
-                    if (!_integrationSet.Contains(coord))
-                    {
-                        _pendingMeshJobs[coord] = task.Job;
-                        _integrationQueue.Enqueue(coord);
-                        _integrationSet.Add(coord);
-                    }
-                    else
-                    {
-                        if (_pendingMeshJobs.TryGetValue(coord, out var oldJob))
-                            oldJob.Dispose();
-                        _pendingMeshJobs[coord] = task.Job;
-                    }
+                    _pendingMeshJobs[coord] = task.Job;
+                    _integrationQueue.Enqueue(coord);
+                }
+                else
+                {
+                    if (_pendingMeshJobs.TryGetValue(coord, out var oldJob))
+                        oldJob.Dispose();
+                    _pendingMeshJobs[coord] = task.Job;
                 }
 
                 _lastMeshMs = (long)((Time.realtimeSinceStartupAsDouble - task.StartTime) * 1000.0);

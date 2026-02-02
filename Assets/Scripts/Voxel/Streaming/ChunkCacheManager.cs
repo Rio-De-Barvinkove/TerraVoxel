@@ -22,9 +22,8 @@ namespace TerraVoxel.Voxel.Streaming
         Dictionary<ChunkCoord, ChunkManager.PendingCachedMesh> _pendingCachedMeshes => _ctx.PendingCachedMeshes;
         Dictionary<ChunkCoord, Chunk> _active => _ctx.Active;
         Dictionary<ChunkCoord, MeshData[]> _chunkFaceCache => _ctx.ChunkFaceCache;
-        object _integrationLock => _ctx.IntegrationLock;
-        HashSet<ChunkCoord> _integrationSet => _ctx.IntegrationSet;
-        Queue<ChunkCoord> _integrationQueue => _ctx.IntegrationQueue;
+        System.Collections.Concurrent.ConcurrentDictionary<ChunkCoord, byte> _integrationSet => _ctx.IntegrationSet;
+        System.Collections.Concurrent.ConcurrentQueue<ChunkCoord> _integrationQueue => _ctx.IntegrationQueue;
 
         int _cacheOpsThisFrame { get => _ctx.CacheOpsThisFrame; set => _ctx.CacheOpsThisFrame = value; }
 
@@ -187,19 +186,15 @@ namespace TerraVoxel.Voxel.Streaming
             if (!_active.TryGetValue(coord, out var chunk) || !chunk.Data.IsCreated)
                 return false;
 
-            lock (_integrationLock)
+            if (!_integrationSet.TryAdd(coord, 0))
+                return false;
+            _pendingCachedMeshes[coord] = new ChunkManager.PendingCachedMesh
             {
-                if (_integrationSet.Contains(coord))
-                    return false;
-                _pendingCachedMeshes[coord] = new ChunkManager.PendingCachedMesh
-                {
-                    Mesh = mesh,
-                    Hash = hash,
-                    Epoch = _ctx.StreamingEpoch
-                };
-                _integrationQueue.Enqueue(coord);
-                _integrationSet.Add(coord);
-            }
+                Mesh = mesh,
+                Hash = hash,
+                Epoch = _ctx.StreamingEpoch
+            };
+            _integrationQueue.Enqueue(coord);
             return true;
         }
 

@@ -88,11 +88,7 @@ namespace TerraVoxel.Voxel.Streaming
             if (_pendingCachedMeshes.ContainsKey(coord))
                 _pendingCachedMeshes.Remove(coord);
 
-            lock (_integrationLock)
-            {
-                if (_integrationSet.Contains(coord))
-                    _integrationSet.Remove(coord);
-            }
+            _integrationSet.TryRemove(coord, out _);
             if (_pendingMeshJobs.TryGetValue(coord, out var meshJob))
             {
                 meshJob.Dispose();

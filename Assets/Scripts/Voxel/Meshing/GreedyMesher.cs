@@ -89,26 +89,50 @@ namespace TerraVoxel.Voxel.Meshing
                             }
                         }
                         int n = 0;
-                        for (x[v] = 0; x[v] < size; x[v]++)
+                        bool isInteriorSlice = (x[d] >= 0 && x[d] < size - 1);
+                        if (isInteriorSlice)
                         {
-                            for (x[u] = 0; x[u] < size; x[u]++)
+                            int slice = x[d];
+                            int stepU = (d == 0) ? size : (d == 1) ? (size * size) : 1;
+                            for (x[v] = 0; x[v] < size; x[v]++)
                             {
-                                ushort a = (x[d] >= 0) ? GetVoxel(x) : (ushort)0;
-                                ushort b = (x[d] < size - 1) ? GetVoxel(x + q) : (ushort)0;
-
-                                if ((a != 0) == (b != 0))
+                                int j = x[v];
+                                int rowStart = j * size;
+                                int baseA = InteriorIndex(d, slice, 0, j);
+                                int baseB = InteriorIndex(d, slice + 1, 0, j);
+                                int i = 0;
+                                for (; i <= size - 4; i += 4, n += 4)
                                 {
-                                    Mask[n] = default;
+                                    ushort a0 = Materials[baseA]; ushort a1 = Materials[baseA + stepU]; ushort a2 = Materials[baseA + 2 * stepU]; ushort a3 = Materials[baseA + 3 * stepU];
+                                    ushort b0 = Materials[baseB]; ushort b1 = Materials[baseB + stepU]; ushort b2 = Materials[baseB + 2 * stepU]; ushort b3 = Materials[baseB + 3 * stepU];
+                                    Mask[rowStart + i + 0] = MaskCellFromPair(a0, b0);
+                                    Mask[rowStart + i + 1] = MaskCellFromPair(a1, b1);
+                                    Mask[rowStart + i + 2] = MaskCellFromPair(a2, b2);
+                                    Mask[rowStart + i + 3] = MaskCellFromPair(a3, b3);
+                                    baseA += 4 * stepU;
+                                    baseB += 4 * stepU;
                                 }
-                                else if (a != 0)
+                                for (; i < size; i++, n++)
                                 {
-                                    Mask[n] = new MaskCell { Material = a, Normal = 1 };
+                                    ushort a = Materials[baseA];
+                                    ushort b = Materials[baseB];
+                                    Mask[rowStart + i] = MaskCellFromPair(a, b);
+                                    baseA += stepU;
+                                    baseB += stepU;
                                 }
-                                else
+                            }
+                        }
+                        else
+                        {
+                            for (x[v] = 0; x[v] < size; x[v]++)
+                            {
+                                for (x[u] = 0; x[u] < size; x[u]++)
                                 {
-                                    Mask[n] = new MaskCell { Material = b, Normal = -1 };
+                                    ushort a = (x[d] >= 0) ? GetVoxel(x) : (ushort)0;
+                                    ushort b = (x[d] < size - 1) ? GetVoxel(x + q) : (ushort)0;
+                                    Mask[n] = MaskCellFromPair(a, b);
+                                    n++;
                                 }
-                                n++;
                             }
                         }
 
@@ -249,6 +273,21 @@ namespace TerraVoxel.Voxel.Meshing
             }
 
             int Index(int x, int y, int z) => x + Size * (y + Size * z);
+
+            /// <summary>Linear index into Materials for interior voxel at (d, slice, i_u, j_v).</summary>
+            int InteriorIndex(int d, int slice, int iU, int jV)
+            {
+                if (d == 0) return slice + Size * (iU + Size * jV);
+                if (d == 1) return jV + Size * (slice + Size * iU);
+                return iU + Size * (jV + Size * slice);
+            }
+
+            static MaskCell MaskCellFromPair(ushort a, ushort b)
+            {
+                if ((a != 0) == (b != 0)) return default;
+                if (a != 0) return new MaskCell { Material = a, Normal = 1 };
+                return new MaskCell { Material = b, Normal = -1 };
+            }
         }
 
         public static JobHandle Schedule(ChunkData data,

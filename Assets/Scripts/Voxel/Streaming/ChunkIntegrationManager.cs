@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using UnityEngine;
@@ -13,9 +14,8 @@ namespace TerraVoxel.Voxel.Streaming
             _ctx = ctx;
         }
 
-        Queue<ChunkCoord> _integrationQueue => _ctx.IntegrationQueue;
-        HashSet<ChunkCoord> _integrationSet => _ctx.IntegrationSet;
-        object _integrationLock => _ctx.IntegrationLock;
+        ConcurrentQueue<ChunkCoord> _integrationQueue => _ctx.IntegrationQueue;
+        ConcurrentDictionary<ChunkCoord, byte> _integrationSet => _ctx.IntegrationSet;
         Dictionary<ChunkCoord, ChunkMeshJobHandle> _pendingMeshJobs => _ctx.PendingMeshJobs;
         Dictionary<ChunkCoord, ChunkManager.PendingCachedMesh> _pendingCachedMeshes => _ctx.PendingCachedMeshes;
         Dictionary<ChunkCoord, Chunk> _active => _ctx.Active;
@@ -47,10 +47,7 @@ namespace TerraVoxel.Voxel.Streaming
 
         internal bool IsInIntegrationSet(ChunkCoord coord)
         {
-            lock (_integrationLock)
-            {
-                return _integrationSet.Contains(coord);
-            }
+            return _integrationSet.ContainsKey(coord);
         }
 
         internal void ProcessIntegrationQueue()
@@ -87,12 +84,8 @@ namespace TerraVoxel.Voxel.Streaming
 
                 processed++;
                 ChunkCoord coord;
-                lock (_integrationLock)
-                {
-                    if (_integrationQueue.Count == 0) break;
-                    coord = _integrationQueue.Dequeue();
-                    _integrationSet.Remove(coord);
-                }
+                if (!_integrationQueue.TryDequeue(out coord)) break;
+                _integrationSet.TryRemove(coord, out _);
 
                 // Skip stale entries (no longer active or out of range)
                 if (!_active.TryGetValue(coord, out var chunk))

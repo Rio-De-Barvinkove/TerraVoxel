@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Meshing;
@@ -35,8 +36,8 @@ namespace TerraVoxel.Voxel.Streaming
         HashSet<ChunkCoord> _preloadSet => _ctx.PreloadSet;
         Queue<ChunkCoord> _removeQueue => _ctx.RemoveQueue;
         HashSet<ChunkCoord> _removeSet => _ctx.RemoveSet;
-        Queue<ChunkCoord> _integrationQueue => _ctx.IntegrationQueue;
-        HashSet<ChunkCoord> _integrationSet => _ctx.IntegrationSet;
+        ConcurrentQueue<ChunkCoord> _integrationQueue => _ctx.IntegrationQueue;
+        ConcurrentDictionary<ChunkCoord, byte> _integrationSet => _ctx.IntegrationSet;
         HashSet<ChunkCoord> _remeshSet => _ctx.RemeshSet;
         Queue<ChunkCoord> _faceRemeshQueue => _ctx.FaceRemeshQueue;
         HashSet<ChunkCoord> _faceRemeshSet => _ctx.FaceRemeshSet;
@@ -149,6 +150,11 @@ namespace TerraVoxel.Voxel.Streaming
             _pendingSet.Clear();
             for (int i = 0; i < pendingKeep.Count; i++)
                 _pendingSet.Add(pendingKeep[i]);
+            if (viewCone != null && viewCone.Enabled && _ctx.Player != null)
+            {
+                for (int i = 0; i < pendingKeep.Count; i++)
+                    viewCone.EnqueueWithPriority(pendingKeep[i], center, _ctx.Player);
+            }
 
             var preloadKeep = _ctx.DropBufferPreloadKeep;
             preloadKeep.Clear();
@@ -167,8 +173,8 @@ namespace TerraVoxel.Voxel.Streaming
             }
             _removeQueue.Clear();
             _removeSet.Clear();
-            _integrationQueue.Clear();
-            lock (_ctx.IntegrationLock) { _integrationSet.Clear(); }
+            while (_integrationQueue.TryDequeue(out _)) { }
+            _integrationSet.Clear();
 
             var remeshKeep = _ctx.DropBufferRemeshKeep;
             remeshKeep.Clear();
@@ -231,14 +237,8 @@ namespace TerraVoxel.Voxel.Streaming
                 }
                 else
                 {
-                    lock (_ctx.IntegrationLock)
-                    {
-                        if (!_integrationSet.Contains(kvp.Key))
-                        {
-                            _integrationQueue.Enqueue(kvp.Key);
-                            _integrationSet.Add(kvp.Key);
-                        }
-                    }
+                    if (_integrationSet.TryAdd(kvp.Key, 0))
+                        _integrationQueue.Enqueue(kvp.Key);
                 }
             }
             for (int i = 0; i < stale.Count; i++)
@@ -252,14 +252,8 @@ namespace TerraVoxel.Voxel.Streaming
                     cachedStale.Add(kvp.Key);
                 else
                 {
-                    lock (_ctx.IntegrationLock)
-                    {
-                        if (!_integrationSet.Contains(kvp.Key))
-                        {
-                            _integrationQueue.Enqueue(kvp.Key);
-                            _integrationSet.Add(kvp.Key);
-                        }
-                    }
+                    if (_integrationSet.TryAdd(kvp.Key, 0))
+                        _integrationQueue.Enqueue(kvp.Key);
                 }
             }
             for (int i = 0; i < cachedStale.Count; i++)
@@ -283,9 +277,6 @@ namespace TerraVoxel.Voxel.Streaming
                 if (_removeSet.Add(kvp.Key))
                     _removeQueue.Enqueue(kvp.Key);
             }
-
-            if (viewCone != null && viewCone.Enabled)
-                viewCone.Clear();
         }
     }
 }

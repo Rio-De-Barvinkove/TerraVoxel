@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
@@ -163,8 +164,8 @@ namespace TerraVoxel.Voxel.Streaming
         readonly List<ChunkCoord> _genCompleted = new List<ChunkCoord>();
         readonly List<ChunkCoord> _meshCompleted = new List<ChunkCoord>();
         readonly HashSet<ChunkCoord> _meshedOnce = new HashSet<ChunkCoord>();
-        readonly Queue<ChunkCoord> _integrationQueue = new Queue<ChunkCoord>();
-        readonly HashSet<ChunkCoord> _integrationSet = new HashSet<ChunkCoord>();
+        readonly ConcurrentQueue<ChunkCoord> _integrationQueue = new ConcurrentQueue<ChunkCoord>();
+        readonly ConcurrentDictionary<ChunkCoord, byte> _integrationSet = new ConcurrentDictionary<ChunkCoord, byte>();
         readonly Dictionary<ChunkCoord, ChunkMeshJobHandle> _pendingMeshJobs = new Dictionary<ChunkCoord, ChunkMeshJobHandle>();
         readonly Dictionary<ChunkCoord, PendingCachedMesh> _pendingCachedMeshes = new Dictionary<ChunkCoord, PendingCachedMesh>();
         readonly Dictionary<ulong, CachedMeshEntry> _meshCache = new Dictionary<ulong, CachedMeshEntry>();
@@ -230,7 +231,6 @@ namespace TerraVoxel.Voxel.Streaming
         bool _savedPlayerControllerEnabled;
         bool _savedCharacterControllerEnabled;
         double _safeSpawnWaitStart;
-        readonly object _integrationLock = new object();
         int _rebuildNeighborsDepth;
         int _requestRemeshDepth;
 
@@ -411,7 +411,7 @@ namespace TerraVoxel.Voxel.Streaming
         {
             if (_integration != null)
                 return _integration.IsInIntegrationSet(coord);
-            lock (_integrationLock) return _integrationSet.Contains(coord);
+            return _integrationSet.ContainsKey(coord);
         }
 
         public void SetPlayer(Transform newPlayer)
@@ -658,6 +658,11 @@ namespace TerraVoxel.Voxel.Streaming
             _pendingSet.Clear();
             for (int i = 0; i < _dropPendingKeep.Count; i++)
                 _pendingSet.Add(_dropPendingKeep[i]);
+            if (viewCone != null && viewCone.Enabled && player != null)
+            {
+                for (int i = 0; i < _dropPendingKeep.Count; i++)
+                    viewCone.EnqueueWithPriority(_dropPendingKeep[i], center, player);
+            }
 
             foreach (var coord in _preloadSet)
             {
@@ -674,8 +679,8 @@ namespace TerraVoxel.Voxel.Streaming
             }
             _removeQueue.Clear();
             _removeSet.Clear();
-            _integrationQueue.Clear();
-            lock (_integrationLock) { _integrationSet.Clear(); }
+            while (_integrationQueue.TryDequeue(out _)) { }
+            _integrationSet.Clear();
 
             foreach (var coord in _remeshSet)
             {
@@ -732,13 +737,9 @@ namespace TerraVoxel.Voxel.Streaming
                 }
                 else
                 {
-                    lock (_integrationLock)
+                    if (_integrationSet.TryAdd(coord, 0))
                     {
-                        if (!_integrationSet.Contains(coord))
-                        {
-                            _integrationQueue.Enqueue(coord);
-                            _integrationSet.Add(coord);
-                        }
+                        _integrationQueue.Enqueue(coord);
                     }
                 }
             }
@@ -754,13 +755,9 @@ namespace TerraVoxel.Voxel.Streaming
                 }
                 else
                 {
-                    lock (_integrationLock)
+                    if (_integrationSet.TryAdd(coord, 0))
                     {
-                        if (!_integrationSet.Contains(coord))
-                        {
-                            _integrationQueue.Enqueue(coord);
-                            _integrationSet.Add(coord);
-                        }
+                        _integrationQueue.Enqueue(coord);
                     }
                 }
             }

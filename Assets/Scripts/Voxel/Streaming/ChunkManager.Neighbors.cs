@@ -99,11 +99,7 @@ namespace TerraVoxel.Voxel.Streaming
                     if (_pendingCachedMeshes.ContainsKey(neighbor))
                     {
                         _pendingCachedMeshes.Remove(neighbor);
-                        lock (_integrationLock)
-                        {
-                            if (_integrationSet.Contains(neighbor))
-                                _integrationSet.Remove(neighbor);
-                        }
+                        _integrationSet.TryRemove(neighbor, out _);
                     }
                 }
 
