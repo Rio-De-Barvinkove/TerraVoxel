@@ -54,10 +54,10 @@
 - Occlusion/
   - `ChunkOcclusionCuller.cs` — frustum + optional raycast occlusion; lock _occludedLock; _activeCoordsThisTick cleanup; recheckOccludedPerFrame (бюджет повторної перевірки _occluded щокадру); GetRaycastMask warning; AnyRayUnblocked, GetChunkBounds, RestoreAll doc.
 - Svo/
-  - `SvoVolume.cs` — структура SVO (Node byte Material/Density; RootSize, LeafSize, NativeList); Dispose() обовʼязково; Material 0–255, >256 матеріалів потребує mapping.
-  - `SvoBuilder.cs` — побудова SVO з ChunkData (queue‑based); SampleNeighbor bounds (XMin/XMax size³, Y/Z size²); caller must Dispose volume; IsUniformRegion/SampleRegionMaterialAndDensity O(size³).
-  - `SvoMeshBuilder.cs` — генерація Mesh з SVO (stack traverse); BuildMesh/GetMaterialAt/HasSolidNeighbor docs (boundary = empty); mesh color R channel = material index.
-  - `SvoManager.cs` — кеш SVO‑мешів, lock _cacheLock; hash‑based reuse, LRU evict (UseCount, LastUsedFrame); useGpuRaymarch not implemented (tooltip); read‑mostly.
+  - `SvoVolume.cs` — структура SVO (Node byte Material/Density; RootSize, LeafSize, NativeList); Dispose() обовʼязково, safe to call multiple times; Material 0–255, >256 матеріалів потребує mapping.
+  - `SvoBuilder.cs` — побудова SVO з ChunkData (queue‑based); SampleNeighbor bounds (XMin/XMax size³, Y/Z size²), early return when no face provided; caller must Dispose volume; IsUniformRegion/SampleRegionMaterialAndDensity O(size³).
+  - `SvoMeshBuilder.cs` — генерація Mesh з SVO (stack traverse); BuildMesh/GetMaterialAt/HasSolidNeighbor (null/IsCreated checks, boundary = empty); AppendQuad doc; mesh color R channel = material index.
+  - `SvoManager.cs` — кеш SVO‑мешів, lock _cacheLock; hash‑based reuse, LRU evict (LinkedList, O(1) per evict); TryGetOrBuildMesh exception → no cache, volume disposed in finally; useGpuRaymarch not implemented (tooltip); read‑mostly.
 
 - Rendering/
   - `VoxelMaterialLibrary.cs` (SO) — Texture2DArray, TriplanarScale, NormalStrength, DefaultLayerIndex.
@@ -71,11 +71,12 @@
   - `VoxelDebugHUD.cs` — HUD, графіки, CSV‑експорт, async summary‑лог, черги/інтеграція.
 
 - Save/
-  - `ChunkSaveBinary.cs` — бінарний формат, magic+version+flags; LZ4/GZip (v1) декомпресія; матеріали (ushort) + опційна щільність; CRC.
-  - `ChunkModBinary.cs` — бінарні дельти (index+material ushort), LZ4, CRC.
+  - `ChunkSaveBinary.cs` — бінарний формат, magic+version+flags; LZ4/GZip (v1) або RLE (useRle) декомпресія; матеріали (ushort) + опційна щільність; CRC.
+  - `ChunkModBinary.cs` — бінарні дельти (index+material ushort), LZ4 або RLE (useRle), CRC.
+  - `RleCompression.cs` — RLE compress/decompress для byte[] (run = value, count 1..255); використовується в ChunkSaveBinary та ChunkModBinary при useRle.
   - `ChunkSaveMode.cs` — enum режимів сейву + ChunkMeta.
-  - `ChunkSaveManager.cs` — async save‑черга, атомарний запис, load on spawn, save on unload/destroy; worldId/region‑папки; join timeout.
-  - `ChunkModManager.cs` — менеджер модифікацій (delta‑сейви), async/atomic; пакетні правки; join timeout.
+  - `ChunkSaveManager.cs` — async save‑черга, атомарний запис, load on spawn, save on unload/destroy; worldId/region‑папки; useRle опція; join timeout.
+  - `ChunkModManager.cs` — менеджер модифікацій (delta‑сейви), async/atomic; useRle опція; пакетні правки; join timeout.
   - `ChunkHybridSaveManager.cs` — правила delta vs snapshot.
   - `VoxelModDebugInput.cs` — режим взаємодії (B), перемикання dig/build (V), raycast, brush size 1‑10, форми, підсвітка.
   - `Lz4Codec.cs` — C# LZ4‑кодек (вбудований, без зовнішніх залежностей).

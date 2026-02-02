@@ -17,7 +17,8 @@ namespace TerraVoxel.Voxel.Save
             Compressed = 1 << 0,
             HasDensity = 1 << 1,
             CompressionLz4 = 1 << 2,
-            Materials16 = 1 << 3
+            Materials16 = 1 << 3,
+            CompressionRle = 1 << 4
         }
 
         public struct Payload
@@ -29,7 +30,7 @@ namespace TerraVoxel.Voxel.Save
             public ChunkMeta Meta;
         }
 
-        public static byte[] Serialize(Payload payload, bool compress, CompressionLevel level)
+        public static byte[] Serialize(Payload payload, bool compress, CompressionLevel level, bool useRle = false)
         {
             if (payload.Materials == null)
                 throw new ArgumentNullException(nameof(payload.Materials));
@@ -45,14 +46,27 @@ namespace TerraVoxel.Voxel.Save
                 Buffer.BlockCopy(payload.DensityBytes, 0, body, materialsLength, densityLength);
 
             uint crc32 = Crc32.Compute(body);
-            byte[] bodyOut = compress ? Lz4Codec.Compress(body) : body;
+            byte[] bodyOut;
+            ChunkFlags flags = ChunkFlags.None;
+            if (useRle)
+            {
+                bodyOut = RleCompression.Compress(body);
+                flags |= ChunkFlags.CompressionRle;
+            }
+            else if (compress)
+            {
+                bodyOut = Lz4Codec.Compress(body);
+                flags |= ChunkFlags.Compressed | ChunkFlags.CompressionLz4;
+            }
+            else
+            {
+                bodyOut = body;
+            }
 
             ChunkMeta meta = payload.Meta;
             meta.SaveMode = ChunkSaveMode.SnapshotBacked;
             if (meta.DeltaCount < 0) meta.DeltaCount = 0;
 
-            ChunkFlags flags = ChunkFlags.None;
-            if (compress) flags |= ChunkFlags.Compressed | ChunkFlags.CompressionLz4;
             if (densityLength > 0) flags |= ChunkFlags.HasDensity;
             flags |= ChunkFlags.Materials16;
 
@@ -125,13 +139,24 @@ namespace TerraVoxel.Voxel.Save
 
             byte[] body = br.ReadBytes(bodyLength);
             byte[] uncompressed = body;
-            if ((flags & ChunkFlags.Compressed) != 0)
+            int expectedLength = materialsLength + densityLength;
+            if ((flags & ChunkFlags.CompressionRle) != 0)
             {
-                int expected = materialsLength + densityLength;
+                try
+                {
+                    uncompressed = RleCompression.Decompress(body, expectedLength);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+            else if ((flags & ChunkFlags.Compressed) != 0)
+            {
                 bool useLz4 = (flags & ChunkFlags.CompressionLz4) != 0;
                 try
                 {
-                    uncompressed = useLz4 ? Lz4Codec.Decompress(body, expected) : DecompressGzip(body, expected);
+                    uncompressed = useLz4 ? Lz4Codec.Decompress(body, expectedLength) : DecompressGzip(body, expectedLength);
                 }
                 catch
                 {
@@ -139,7 +164,7 @@ namespace TerraVoxel.Voxel.Save
                 }
             }
 
-            if (uncompressed.Length < materialsLength + densityLength) return false;
+            if (uncompressed.Length < expectedLength) return false;
             bool materials16 = (flags & ChunkFlags.Materials16) != 0;
             if (materials16 && (materialsLength % 2) != 0) return false;
             if (hasCrc)

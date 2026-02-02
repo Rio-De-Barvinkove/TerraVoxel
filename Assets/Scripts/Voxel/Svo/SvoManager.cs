@@ -29,7 +29,7 @@ namespace TerraVoxel.Voxel.Svo
             public int UseCount;
         }
 
-        /// <summary>Builds or returns cached SVO mesh. On Build/BuildMesh exception, logs error, disposes volume, returns false and does not cache.</summary>
+        /// <summary>Builds or returns cached SVO mesh. On Build/BuildMesh exception, logs error, disposes volume in finally, returns false and does not cache; no inconsistent state is stored.</summary>
         public bool TryGetOrBuildMesh(ChunkCoord coord, ChunkData data, int leafSize, byte maxMaterialIndex, byte fallbackMaterialIndex, out Mesh mesh)
         {
             mesh = null;

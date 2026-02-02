@@ -22,6 +22,7 @@ namespace TerraVoxel.Voxel.Save
         [SerializeField] bool saveOnUnload = true;
         [SerializeField] bool saveOnDestroy = true;
         [SerializeField] bool compress = true;
+        [SerializeField] bool useRle = false;
         [SerializeField] IoCompressionLevel compressionLevel = IoCompressionLevel.Fastest;
         [SerializeField] bool saveDensity = false;
         [SerializeField] bool asyncWrite = true;
@@ -109,6 +110,7 @@ namespace TerraVoxel.Voxel.Save
                 Path = GetChunkPath(coord),
                 Payload = payload,
                 Compress = compress,
+                UseRle = useRle,
                 CompressionLevel = compressionLevel
             };
 
@@ -202,7 +204,7 @@ namespace TerraVoxel.Voxel.Save
                 if (!string.IsNullOrEmpty(dir))
                     Directory.CreateDirectory(dir);
 
-                byte[] bytes = ChunkSaveBinary.Serialize(request.Payload, request.Compress, request.CompressionLevel);
+                byte[] bytes = ChunkSaveBinary.Serialize(request.Payload, request.Compress, request.CompressionLevel, request.UseRle);
                 string tempPath = request.Path + ".tmp";
                 File.WriteAllBytes(tempPath, bytes);
 
@@ -285,6 +287,7 @@ namespace TerraVoxel.Voxel.Save
             public string Path;
             public ChunkSaveBinary.Payload Payload;
             public bool Compress;
+            public bool UseRle;
             public IoCompressionLevel CompressionLevel;
         }
     }

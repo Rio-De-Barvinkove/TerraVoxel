@@ -33,7 +33,7 @@ namespace TerraVoxel.Voxel.Svo
             Nodes = new NativeList<Node>(64, allocator);
         }
 
-        /// <summary>Must be called when done to free native memory; otherwise leak.</summary>
+        /// <summary>Must be called when done to free native memory; otherwise leak. Safe to call multiple times; subsequent calls no-op if already disposed.</summary>
         public void Dispose()
         {
             if (Nodes.IsCreated)

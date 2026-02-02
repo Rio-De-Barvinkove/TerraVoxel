@@ -97,9 +97,10 @@ namespace TerraVoxel.Voxel.Svo
             if (!solidPY) AppendQuad(ref data, p010, p110, p111, p011, new Vector3(0, 1, 0), color);
         }
 
-        /// <summary>Voxels outside volume (x,y,z &lt; 0 or &gt;= RootSize) are considered empty (no solid neighbor).</summary>
+        /// <summary>Voxels outside volume (x,y,z &lt; 0 or &gt;= RootSize) are considered empty (no solid neighbor). Returns false if volume is null.</summary>
         static bool HasSolidNeighbor(SvoVolume volume, Vector3 originVoxels, int sizeVoxels, int dx, int dy, int dz)
         {
+            if (volume == null) return false;
             int nx = (int)originVoxels.x + dx * sizeVoxels;
             int ny = (int)originVoxels.y + dy * sizeVoxels;
             int nz = (int)originVoxels.z + dz * sizeVoxels;
@@ -107,9 +108,10 @@ namespace TerraVoxel.Voxel.Svo
             return mat != 0;
         }
 
-        /// <summary>Returns 0 for out-of-bounds (boundary voxels treated as empty).</summary>
+        /// <summary>Returns 0 for out-of-bounds (boundary voxels treated as empty). Returns 0 if volume is null or Nodes not created.</summary>
         static byte GetMaterialAt(SvoVolume volume, int x, int y, int z)
         {
+            if (volume == null || !volume.Nodes.IsCreated) return 0;
             int rootSize = volume.RootSize;
             if (x < 0 || x >= rootSize || y < 0 || y >= rootSize || z < 0 || z >= rootSize)
                 return 0;
@@ -132,6 +134,7 @@ namespace TerraVoxel.Voxel.Svo
             return 0;
         }
 
+        /// <summary>Appends a quad (4 vertices, 2 triangles) with shared normal and color.</summary>
         static void AppendQuad(ref MeshData data, Vector3 a, Vector3 b, Vector3 c, Vector3 d, Vector3 normal, Color32 color)
         {
             int start = data.Vertices.Length;

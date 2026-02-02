@@ -25,7 +25,7 @@ namespace TerraVoxel.Voxel.Svo
             public int X0, Y0, Z0, Size, NodeIndex;
         }
 
-        /// <summary>Builds SVO from chunk data. Caller must call volume.Dispose() when done to avoid leaks.</summary>
+        /// <summary>Builds SVO from chunk data. Caller must dispose volume in all cases (e.g. in finally) to avoid leaks.</summary>
         public static SvoVolume Build(ChunkData data, int leafSize, in SvoNeighborData? neighborData = null)
         {
             int size = data.Size;
@@ -119,10 +119,12 @@ namespace TerraVoxel.Voxel.Svo
             return false;
         }
 
-        /// <summary>Samples neighbor chunk data. Expects XMin/XMax length >= size^3; YMin/YMax/ZMin/ZMax length >= size^2. Returns 0 if out of bounds.</summary>
+        /// <summary>Samples neighbor chunk data. Expects XMin/XMax length >= size^3; YMin/YMax/ZMin/ZMax length >= size^2. Returns 0 if out of bounds or when no face array is provided for the requested direction.</summary>
         static ushort SampleNeighbor(in SvoNeighborData nb, int x, int y, int z, int size)
         {
             if (size <= 0) return 0;
+            if (!nb.XMin.HasValue && !nb.XMax.HasValue && !nb.YMin.HasValue && !nb.YMax.HasValue && !nb.ZMin.HasValue && !nb.ZMax.HasValue)
+                return 0;
             if (x < 0 && nb.XMin.HasValue)
             {
                 int nx = x + size, ny = Mathf.Clamp(y, 0, size - 1), nz = Mathf.Clamp(z, 0, size - 1);

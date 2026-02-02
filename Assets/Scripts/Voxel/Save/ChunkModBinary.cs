@@ -15,7 +15,8 @@ namespace TerraVoxel.Voxel.Save
             None = 0,
             Compressed = 1 << 0,
             CompressionLz4 = 1 << 1,
-            Materials16 = 1 << 2
+            Materials16 = 1 << 2,
+            CompressionRle = 1 << 3
         }
 
         public struct ModEntry
@@ -32,7 +33,7 @@ namespace TerraVoxel.Voxel.Save
             public ChunkMeta Meta;
         }
 
-        public static byte[] Serialize(Payload payload, bool compress)
+        public static byte[] Serialize(Payload payload, bool compress, bool useRle = false)
         {
             int entryCount = payload.Entries != null ? payload.Entries.Length : 0;
             int entrySize = 6;
@@ -50,15 +51,27 @@ namespace TerraVoxel.Voxel.Save
             }
 
             uint crc32 = Crc32.Compute(body);
-            byte[] bodyOut = compress ? Lz4Codec.Compress(body) : body;
+            byte[] bodyOut;
+            ModFlags flags = ModFlags.None;
+            if (useRle)
+            {
+                bodyOut = RleCompression.Compress(body);
+                flags |= ModFlags.CompressionRle;
+            }
+            else if (compress)
+            {
+                bodyOut = Lz4Codec.Compress(body);
+                flags |= ModFlags.Compressed | ModFlags.CompressionLz4;
+            }
+            else
+            {
+                bodyOut = body;
+            }
+            flags |= ModFlags.Materials16;
 
             ChunkMeta meta = payload.Meta;
             meta.SaveMode = ChunkSaveMode.DeltaBacked;
             meta.DeltaCount = entryCount;
-
-            ModFlags flags = ModFlags.None;
-            if (compress) flags |= ModFlags.Compressed | ModFlags.CompressionLz4;
-            flags |= ModFlags.Materials16;
 
             using var outStream = new MemoryStream(64 + bodyOut.Length);
             using var writer = new BinaryWriter(outStream);
@@ -135,7 +148,18 @@ namespace TerraVoxel.Voxel.Save
 
             byte[] body = br.ReadBytes(bodyLength);
             byte[] uncompressed = body;
-            if ((flags & ModFlags.Compressed) != 0)
+            if ((flags & ModFlags.CompressionRle) != 0)
+            {
+                try
+                {
+                    uncompressed = RleCompression.Decompress(body, rawLength);
+                }
+                catch
+                {
+                    return false;
+                }
+            }
+            else if ((flags & ModFlags.Compressed) != 0)
             {
                 if ((flags & ModFlags.CompressionLz4) == 0) return false;
                 try

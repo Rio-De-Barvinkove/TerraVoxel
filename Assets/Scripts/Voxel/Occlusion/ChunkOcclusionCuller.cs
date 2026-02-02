@@ -8,7 +8,8 @@ namespace TerraVoxel.Voxel.Occlusion
 {
     /// <summary>
     /// Occlusion culling for chunk renderers: frustum and optional raycast.
-    /// Uses fixed maxChecksPerFrame and tickBudgetMs; consider adaptive limits for highly variable load.
+    /// Optional adaptive limits (useAdaptiveBudget): effectiveMaxChecks is adjusted each frame from previous Tick duration vs adaptiveTargetMs.
+    /// Optional dynamic raycast padding (scalePaddingByBounds): padding scales from bounds.size and is clamped to avoid zero or excessive values.
     /// Raycast occlusion is applied only to full-detail mesh chunks (!UsesSvo &amp;&amp; LodStep &lt;= 1); LOD/SVO chunks are skipped for consistent bounds and performance.
     /// Camera.main and manager are null-checked in Tick. _candidates is reused (Clear + Add each Tick) to avoid per-frame list allocation. Physics errors in AnyRayUnblocked are caught and logged once (chunk treated as visible).
     /// </summary>
@@ -18,15 +19,21 @@ namespace TerraVoxel.Voxel.Occlusion
         [SerializeField] bool enableOcclusion = true;
         [SerializeField] bool frustumCulling = true;
         [SerializeField] bool raycastOcclusion = false;
-        [Tooltip("Fixed cap per frame; may cause uneven FPS with many chunks. Consider adaptive budget later.")]
+        [Tooltip("Cap per frame when useAdaptiveBudget is false; when true, effective cap is adjusted from previous Tick time vs adaptiveTargetMs.")]
         [SerializeField] int maxChecksPerFrame = 256;
         [Tooltip("Reserve this many checks per frame to re-test occluded chunks so they can become visible again when the player looks back. Prevents distant 'holes' after returning.")]
         [SerializeField] int recheckOccludedPerFrame = 64;
         [SerializeField] LayerMask occluderMask = ~0;
         [Tooltip("Layer name for raycast; if missing, occluderMask is used (warning logged once).")]
         [SerializeField] string occluderLayerName = "Terrain";
-        [Tooltip("Padding along ray; fixed value may not suit all chunk scales.")]
+        [Tooltip("Padding along ray. When scalePaddingByBounds is true, actual padding is scaled by bounds size (clamped to min/max).")]
         [SerializeField] float raycastPadding = 0.1f;
+        [Tooltip("When true, padding is scaled by bounds.size.magnitude * paddingScaleFactor and clamped to avoid zero or excessive values.")]
+        [SerializeField] bool scalePaddingByBounds = false;
+        [Tooltip("Multiplier applied to bounds.size.magnitude when scalePaddingByBounds is true.")]
+        [SerializeField] float paddingScaleFactor = 1f;
+        const float MinPadding = 0.01f;
+        const float MaxPadding = 2f;
         [Tooltip("When true, preloaded chunks are skipped for culling unless cullPreloaded is true.")]
         [SerializeField] bool ignorePreloaded = true;
         [Tooltip("When true, preloaded chunks can be occluded; when false and ignorePreloaded true, they are neither tested nor culled.")]
@@ -34,6 +41,14 @@ namespace TerraVoxel.Voxel.Occlusion
         [SerializeField] float maxRayDist = 200f;
         [Tooltip("Max ms per Tick; fixed budget. System overload may cause timing drift.")]
         [SerializeField] float tickBudgetMs = 5f;
+        [Tooltip("When true, max checks per frame is adjusted each frame based on previous Tick duration vs adaptiveTargetMs to reduce FPS spikes.")]
+        [SerializeField] bool useAdaptiveBudget = false;
+        [Tooltip("Target ms per Tick when useAdaptiveBudget is true; over budget reduces effectiveMaxChecks, under budget increases it.")]
+        [SerializeField] float adaptiveTargetMs = 2f;
+        [Tooltip("Minimum checks per frame when using adaptive budget.")]
+        [SerializeField] int adaptiveMinChecks = 32;
+        [Tooltip("Maximum checks per frame when using adaptive budget.")]
+        [SerializeField] int adaptiveMaxChecks = 512;
         [Tooltip("If true, skip raycasts when no occluder in chunk bounds sphere (reduces raycasts when chunk is clearly visible).")]
         [SerializeField] bool useCoarseSphereCheck = false;
 
@@ -56,6 +71,8 @@ namespace TerraVoxel.Voxel.Occlusion
         static readonly Comparer<int> CornerDistComparer = Comparer<int>.Create((a, b) => CornerDistSq[a].CompareTo(CornerDistSq[b]));
         bool _wasEnabled;
         float _maxRayDistSq;
+        float _lastTickMs;
+        int _effectiveMaxChecks;
         static bool _warnedLayerMissing;
         static bool _warnedLayerEmpty;
         static bool _warnedPhysicsError;
@@ -115,8 +132,22 @@ namespace TerraVoxel.Voxel.Occlusion
 
             _candidates.Sort((a, b) => a.DistSq.CompareTo(b.DistSq));
 
-            int recheckBudget = Mathf.Clamp(recheckOccludedPerFrame, 0, maxChecksPerFrame > 0 ? maxChecksPerFrame : int.MaxValue);
-            int mainBudget = maxChecksPerFrame > 0 ? Mathf.Max(0, maxChecksPerFrame - recheckBudget) : int.MaxValue;
+            int effectiveMaxChecks = maxChecksPerFrame;
+            if (useAdaptiveBudget)
+            {
+                int baseVal = _effectiveMaxChecks > 0 ? _effectiveMaxChecks : maxChecksPerFrame;
+                if (_lastTickMs > 0f)
+                {
+                    if (_lastTickMs > adaptiveTargetMs)
+                        baseVal = (int)(baseVal * 0.8f);
+                    else
+                        baseVal = (int)(baseVal * 1.1f) + 1;
+                }
+                effectiveMaxChecks = Mathf.Clamp(baseVal, adaptiveMinChecks, adaptiveMaxChecks);
+            }
+
+            int recheckBudget = Mathf.Clamp(recheckOccludedPerFrame, 0, effectiveMaxChecks > 0 ? effectiveMaxChecks : int.MaxValue);
+            int mainBudget = effectiveMaxChecks > 0 ? Mathf.Max(0, effectiveMaxChecks - recheckBudget) : int.MaxValue;
 
             float startTime = Time.realtimeSinceStartup;
             float budgetSec = tickBudgetMs > 0 ? tickBudgetMs * 0.001f : float.MaxValue;
@@ -125,7 +156,7 @@ namespace TerraVoxel.Voxel.Occlusion
             for (int i = 0; i < _candidates.Count; i++)
             {
                 if (mainBudget > 0 && checks >= mainBudget) break;
-                if (maxChecksPerFrame > 0 && checks >= maxChecksPerFrame) break;
+                if (effectiveMaxChecks > 0 && checks >= effectiveMaxChecks) break;
                 if (Time.realtimeSinceStartup - startTime > budgetSec) break;
 
                 var candidate = _candidates[i];
@@ -166,7 +197,7 @@ namespace TerraVoxel.Voxel.Occlusion
             }
 
             // Re-check some occluded chunks so they can become visible again when the player looks back (avoids persistent "hole").
-            if (recheckBudget > 0 && checks < maxChecksPerFrame)
+            if (recheckBudget > 0 && checks < effectiveMaxChecks)
             {
                 lock (_occludedLock)
                 {
@@ -180,10 +211,14 @@ namespace TerraVoxel.Voxel.Occlusion
                         n++;
                     }
                 }
-                if (_restoreBuffer.Count == 0) return;
+                if (_restoreBuffer.Count == 0)
+                {
+                    RecordTickTiming(startTime, effectiveMaxChecks);
+                    return;
+                }
                 foreach (var coord in _restoreBuffer)
                 {
-                    if (maxChecksPerFrame > 0 && checks >= maxChecksPerFrame) break;
+                    if (effectiveMaxChecks > 0 && checks >= effectiveMaxChecks) break;
                     if (Time.realtimeSinceStartup - startTime > budgetSec) break;
                     if (!manager.TryGetChunk(coord, out var chunk) || chunk == null) continue;
 
@@ -210,6 +245,23 @@ namespace TerraVoxel.Voxel.Occlusion
                         checks++;
                     }
                 }
+            }
+
+            RecordTickTiming(startTime, effectiveMaxChecks);
+        }
+
+        void RecordTickTiming(float startTime, int effectiveMaxChecks)
+        {
+            float elapsedMs = (Time.realtimeSinceStartup - startTime) * 1000f;
+            _lastTickMs = elapsedMs;
+            if (useAdaptiveBudget)
+            {
+                int next = effectiveMaxChecks;
+                if (_lastTickMs > adaptiveTargetMs)
+                    next = (int)(next * 0.8f);
+                else
+                    next = (int)(next * 1.1f) + 1;
+                _effectiveMaxChecks = Mathf.Clamp(next, adaptiveMinChecks, adaptiveMaxChecks);
             }
         }
 
@@ -252,7 +304,12 @@ namespace TerraVoxel.Voxel.Occlusion
                     occluderInSphere = true;
                 }
                 FillBoundsCorners(bounds);
-                float padding = raycastPadding; // Could scale by bounds.size.magnitude for variable chunk scales (future).
+                float padding = raycastPadding;
+                if (scalePaddingByBounds)
+                {
+                    float scaled = raycastPadding * (bounds.size.magnitude * paddingScaleFactor);
+                    padding = Mathf.Clamp(scaled, MinPadding, MaxPadding);
+                }
                 int rayCount = 8;
                 if (occluderInSphere)
                 {

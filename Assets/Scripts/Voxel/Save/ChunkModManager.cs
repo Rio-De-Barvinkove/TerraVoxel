@@ -22,6 +22,7 @@ namespace TerraVoxel.Voxel.Save
         [SerializeField] bool saveOnUnload = true;
         [SerializeField] bool saveOnDestroy = true;
         [SerializeField] bool compress = true;
+        [SerializeField] bool useRle = false;
         [SerializeField] bool asyncWrite = true;
         [SerializeField] bool useRegionFolders = true;
         [SerializeField] int regionSize = 32;
@@ -297,7 +298,8 @@ namespace TerraVoxel.Voxel.Save
             {
                 Path = GetChunkPath(coord),
                 Payload = payload,
-                Compress = compress
+                Compress = compress,
+                UseRle = useRle
             };
 
             if (asyncWrite)
@@ -383,7 +385,7 @@ namespace TerraVoxel.Voxel.Save
                 if (!string.IsNullOrEmpty(dir))
                     Directory.CreateDirectory(dir);
 
-                byte[] bytes = ChunkModBinary.Serialize(request.Payload, request.Compress);
+                byte[] bytes = ChunkModBinary.Serialize(request.Payload, request.Compress, request.UseRle);
                 string tempPath = request.Path + ".tmp";
                 File.WriteAllBytes(tempPath, bytes);
 
@@ -514,6 +516,7 @@ namespace TerraVoxel.Voxel.Save
             public string Path;
             public ChunkModBinary.Payload Payload;
             public bool Compress;
+            public bool UseRle;
         }
     }
 }
