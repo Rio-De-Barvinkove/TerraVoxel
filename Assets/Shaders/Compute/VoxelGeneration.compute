@@ -1,0 +1,66 @@
+// VoxelGeneration.compute - GPU chunk generation (heightmap + noise)
+#pragma kernel GenerateChunk
+
+RWStructuredBuffer<uint> VoxelMaterialBuffer; // ushort material packed in low 16 bits
+uint3 ChunkCoord_;
+uint ChunkSize_;
+uint VoxelOffset_;
+float BaseHeight_;
+float HeightScale_;
+float HorizontalScale_;
+int ColumnChunks_;
+uint Seed_;
+uint MaterialIndex_; // default solid material (0 = air)
+
+// Simple 2D hash for noise (deterministic)
+float Hash(float2 p)
+{
+    float3 p3 = frac(float3(p.xyx) * 0.1031);
+    p3 += dot(p3, p3.yzx + 33.33);
+    return frac((p3.x + p3.y) * p3.z);
+}
+
+// Value noise 2D
+float Noise2D(float2 uv)
+{
+    float2 i = floor(uv);
+    float2 f = frac(uv);
+    f = f * f * (3.0 - 2.0 * f); // smoothstep
+
+    float a = Hash(i);
+    float b = Hash(i + float2(1, 0));
+    float c = Hash(i + float2(0, 1));
+    float d = Hash(i + float2(1, 1));
+
+    return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
+}
+
+// Multi-octave noise (single layer approximation)
+float SampleNoise(float2 worldXZ)
+{
+    float2 uv = worldXZ * HorizontalScale_ * 0.5;
+    uv += float2(Seed_, Seed_ * 1.3);
+    float n = Noise2D(uv);
+    n += 0.5 * Noise2D(uv * 2.0);
+    n += 0.25 * Noise2D(uv * 4.0);
+    n /= (1.0 + 0.5 + 0.25);
+    return n;
+}
+
+[numthreads(8, 8, 8)]
+void GenerateChunk(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= ChunkSize_))
+        return;
+
+    int3 worldPos = int3(ChunkCoord_) * int(ChunkSize_) + int3(id);
+    float height = SampleNoise(float2(worldPos.x, worldPos.z));
+    height = BaseHeight_ + height * HeightScale_;
+    int maxY = ColumnChunks_ * ChunkSize_ - 1;
+    int h = (int)clamp(floor(height), 0.0, (float)maxY);
+
+    uint material = (worldPos.y <= h) ? MaterialIndex_ : 0u;
+
+    uint idx = VoxelOffset_ + id.x + id.y * ChunkSize_ + id.z * ChunkSize_ * ChunkSize_;
+    VoxelMaterialBuffer[idx] = material;
+}

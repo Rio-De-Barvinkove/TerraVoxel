@@ -1,0 +1,167 @@
+// VoxelMeshing.compute - GPU face extraction (no greedy), vertex generation
+#pragma kernel DetectFaces
+#pragma kernel GenerateVertices
+
+StructuredBuffer<uint> VoxelMaterialBuffer;
+RWStructuredBuffer<uint> FaceBuffer;
+RWStructuredBuffer<uint> FaceCounter;
+RWStructuredBuffer<float3> MeshVertexBuffer;
+RWStructuredBuffer<float3> MeshNormalBuffer;
+
+uint ChunkSlot_;
+uint ChunkSize_;
+uint VoxelOffset_;
+uint MeshVertexOffset_;
+uint MaxFaces_;
+uint FaceCount_;
+
+static const int3 FaceOffsets[6] = {
+    int3(-1,0,0), int3(1,0,0), int3(0,-1,0), int3(0,1,0), int3(0,0,-1), int3(0,0,1)
+};
+static const float3 FaceNormals[6] = {
+    float3(-1,0,0), float3(1,0,0), float3(0,-1,0), float3(0,1,0), float3(0,0,-1), float3(0,0,1)
+};
+
+uint GetVoxel(int3 p)
+{
+    if (p.x < 0 || p.x >= (int)ChunkSize_ || p.y < 0 || p.y >= (int)ChunkSize_ || p.z < 0 || p.z >= (int)ChunkSize_)
+        return 0xFFFFFFFF;
+    uint idx = VoxelOffset_ + (uint)p.x + (uint)p.y * ChunkSize_ + (uint)p.z * ChunkSize_ * ChunkSize_;
+    return VoxelMaterialBuffer[idx];
+}
+
+// Pack: face index 0-5 (3 bits) + material (16 bits) = low 19 bits; position x,y,z (10 bits each) in high bits or separate
+// Two uints per face: [0] = x | (y<<10) | (z<<20), [1] = face | (mat<<8)
+void PackFace(uint faceIdx, int3 pos, uint face, uint mat, uint vertexBase)
+{
+    uint packed0 = (uint)pos.x | ((uint)pos.y << 10) | ((uint)pos.z << 20);
+    uint packed1 = face | (mat << 8);
+    FaceBuffer[faceIdx * 2 + 0] = packed0;
+    FaceBuffer[faceIdx * 2 + 1] = packed1;
+}
+
+[numthreads(8, 8, 8)]
+void DetectFaces(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
+{
+    if (groupIndex == 0)
+        FaceCounter[0] = 0;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (any(id >= ChunkSize_))
+        return;
+
+    uint mat = GetVoxel(id);
+    if (mat == 0 || mat == 0xFFFFFFFF)
+        return;
+
+    for (int f = 0; f < 6; f++)
+    {
+        int3 neighbor = id + FaceOffsets[f];
+        uint nMat = GetVoxel(neighbor);
+        if (nMat != 0 && nMat != 0xFFFFFFFF)
+            continue;
+        uint faceIdx;
+        InterlockedAdd(FaceCounter[0], 1, faceIdx);
+        if (faceIdx >= MaxFaces_)
+            continue;
+        PackFace(faceIdx, id, (uint)f, mat, 0);
+    }
+}
+
+void UnpackFace(uint packed0, uint packed1, out int3 pos, out uint face, out uint mat)
+{
+    pos = int3(packed0 & 0x3FF, (packed0 >> 10) & 0x3FF, (packed0 >> 20) & 0x3FF);
+    face = packed1 & 0x7;
+    mat = (packed1 >> 8) & 0xFFFF;
+}
+
+// Quad corners per face (negX, posX, negY, posY, negZ, posZ). Each row: 4 corners as (x,y,z) offsets from voxel base.
+float3 GetFaceCorner(int3 pos, uint face, uint corner)
+{
+    float3 p = float3(pos);
+    if (face == 0) { // neg X: x=pos.x
+        if (corner == 0) return p + float3(0,0,0);
+        if (corner == 1) return p + float3(0,1,0);
+        if (corner == 2) return p + float3(0,1,1);
+        return p + float3(0,0,1);
+    }
+    if (face == 1) { // pos X
+        if (corner == 0) return p + float3(1,0,0);
+        if (corner == 1) return p + float3(1,0,1);
+        if (corner == 2) return p + float3(1,1,1);
+        return p + float3(1,1,0);
+    }
+    if (face == 2) { // neg Y
+        if (corner == 0) return p + float3(0,0,0);
+        if (corner == 1) return p + float3(0,0,1);
+        if (corner == 2) return p + float3(1,0,1);
+        return p + float3(1,0,0);
+    }
+    if (face == 3) { // pos Y
+        if (corner == 0) return p + float3(0,1,0);
+        if (corner == 1) return p + float3(1,1,0);
+        if (corner == 2) return p + float3(1,1,1);
+        return p + float3(0,1,1);
+    }
+    if (face == 4) { // neg Z
+        if (corner == 0) return p + float3(0,0,0);
+        if (corner == 1) return p + float3(1,0,0);
+        if (corner == 2) return p + float3(1,1,0);
+        return p + float3(0,1,0);
+    }
+    // face == 5: pos Z
+    if (corner == 0) return p + float3(0,0,1);
+    if (corner == 1) return p + float3(0,1,1);
+    if (corner == 2) return p + float3(1,1,1);
+    return p + float3(1,0,1);
+}
+
+// 6 vertices per quad (triangle list: tri 0,1,2 and 2,3,0) for DrawProceduralIndirect (no index buffer).
+[numthreads(64, 1, 1)]
+void GenerateVertices(uint id : SV_DispatchThreadID)
+{
+    if (id >= FaceCount_)
+        return;
+
+    uint packed0 = FaceBuffer[id * 2 + 0];
+    uint packed1 = FaceBuffer[id * 2 + 1];
+    int3 pos;
+    uint face;
+    uint mat;
+    UnpackFace(packed0, packed1, pos, face, mat);
+
+    uint vertexBase = MeshVertexOffset_ + id * 6;
+    float3 normal = FaceNormals[face];
+    float3 v0 = GetFaceCorner(pos, face, 0);
+    float3 v1 = GetFaceCorner(pos, face, 1);
+    float3 v2 = GetFaceCorner(pos, face, 2);
+    float3 v3 = GetFaceCorner(pos, face, 3);
+
+    MeshVertexBuffer[vertexBase + 0] = v0;
+    MeshVertexBuffer[vertexBase + 1] = v1;
+    MeshVertexBuffer[vertexBase + 2] = v2;
+    MeshVertexBuffer[vertexBase + 3] = v2;
+    MeshVertexBuffer[vertexBase + 4] = v3;
+    MeshVertexBuffer[vertexBase + 5] = v0;
+    MeshNormalBuffer[vertexBase + 0] = normal;
+    MeshNormalBuffer[vertexBase + 1] = normal;
+    MeshNormalBuffer[vertexBase + 2] = normal;
+    MeshNormalBuffer[vertexBase + 3] = normal;
+    MeshNormalBuffer[vertexBase + 4] = normal;
+    MeshNormalBuffer[vertexBase + 5] = normal;
+}
+
+#pragma kernel PadSlot
+uint PadStart_;
+uint PadCount_;
+// Fill slot tail with degenerate vertices so DrawProceduralIndirect doesn't read garbage.
+[numthreads(64, 1, 1)]
+void PadSlot(uint id : SV_DispatchThreadID)
+{
+    if (id >= PadCount_)
+        return;
+    uint idx = PadStart_ + id;
+    float3 zero = float3(0, 0, 0);
+    MeshVertexBuffer[idx] = zero;
+    MeshNormalBuffer[idx] = zero;
+}

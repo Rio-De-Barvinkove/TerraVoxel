@@ -4,13 +4,14 @@ using UnityEngine;
 namespace TerraVoxel.Voxel.Core
 {
     /// <summary>
-    /// Simple pool for chunk GameObjects.
+    /// Simple pool for chunk GameObjects. UseGpuPipeline is set by ChunkManager; when true, returned chunks may be stub (no mesh) for GPU path or distant LOD.
     /// </summary>
     public class ChunkPool
     {
         readonly Queue<Chunk> _pool = new Queue<Chunk>();
         readonly Chunk _prefab;
         readonly Transform _parent;
+        bool _gpuPipeline;
 
         public ChunkPool(Chunk prefab, Transform parent)
         {
@@ -18,6 +19,8 @@ namespace TerraVoxel.Voxel.Core
             _parent = parent;
             PrepareChunk(_prefab);
         }
+
+        public bool UseGpuPipeline { get => _gpuPipeline; set => _gpuPipeline = value; }
 
         public Chunk Get()
         {

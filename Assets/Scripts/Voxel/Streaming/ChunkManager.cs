@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
+using TerraVoxel.Voxel.GPU;
 using TerraVoxel.Voxel.Lod;
 using TerraVoxel.Voxel.Meshing;
 using TerraVoxel.Voxel.Occlusion;
@@ -23,13 +24,17 @@ namespace TerraVoxel.Voxel.Streaming
     /// </summary>
     public partial class ChunkManager : MonoBehaviour
     {
+        [Tooltip("Required for streaming. Transform to track (e.g. camera or character). If null, no chunks spawn.")]
         [SerializeField] Transform player;
+        [Tooltip("Optional. If null, auto-created at runtime. Chunk instances are spawned under this manager's transform.")]
         [SerializeField] Chunk chunkPrefab;
+        [Tooltip("Required for streaming. Chunk size, column height, noise. If null, no chunks spawn.")]
         [SerializeField] WorldGenConfig worldGen;
         [SerializeField] NoiseStack noiseStack;
         [SerializeField] int loadRadius = 2;
         [SerializeField] int unloadRadius = 3;
-        [SerializeField] bool addColliders = false;
+        [Tooltip("Add colliders to chunks. GPU path uses BoxCollider per chunk; CPU path uses MeshCollider.")]
+        [SerializeField] bool addColliders = true;
         [Header("Physics")]
         [SerializeField] ChunkPhysicsOptimizer physicsOptimizer;
         [SerializeField] int maxSpawnsPerFrame = 1;
@@ -56,8 +61,8 @@ namespace TerraVoxel.Voxel.Streaming
         [Header("Work Dropping")]
         [Tooltip("If player moves this many chunks (XZ), consider dropping queues.")]
         [SerializeField] int workDropDistance = 8;
-        [Tooltip("If view angle changes by this many degrees, consider dropping queues.")]
-        [SerializeField] float workDropAngleDeg = 70f;
+        [Tooltip("0 = spawn chunks in all directions. >0 = only spawn chunks in view cone (can prevent ANY spawns if cone is narrow or camera looks away).")]
+        [SerializeField] float workDropAngleDeg = 0f;
         [Tooltip("If move direction differs from view by this many degrees, consider dropping.")]
         [SerializeField] float workDropMoveAngleDeg = 70f;
         [SerializeField] float workDropCooldown = 0.5f;
@@ -85,6 +90,17 @@ namespace TerraVoxel.Voxel.Streaming
         [SerializeField] bool enableLodTransitionLog = false;
         [Header("Occlusion")]
         [SerializeField] ChunkOcclusionCuller occlusionCuller;
+        [Header("GPU Pipeline")]
+        [Tooltip("When true, use GPU World State, compute shaders, and GpuDrivenRenderer; requires compute shaders and GpuDrivenRenderer assigned.")]
+        [SerializeField] bool useGpuPipeline = false;
+        [Tooltip("Optional: assign to use all four compute shaders from one asset. If null, use the four fields below.")]
+        [SerializeField] GpuPipelineComputeAssets gpuPipelineComputeAssets;
+        [SerializeField] ComputeShader voxelGenerationCompute;
+        [SerializeField] ComputeShader chunkAnalysisCompute;
+        [SerializeField] ComputeShader chunkCullingCompute;
+        [SerializeField] ComputeShader voxelMeshingCompute;
+        [SerializeField] GpuDrivenRenderer gpuDrivenRenderer;
+        [SerializeField] int gpuMaxChunks = 1024;
         [Header("SVO")]
         [SerializeField] SvoManager svoManager;
         [Header("Streaming Budget")]
@@ -217,6 +233,11 @@ namespace TerraVoxel.Voxel.Streaming
         double _lastDropTime;
         bool _warnedLodStepMismatch;
         static bool _warnedChunkPrefabNull;
+        static bool _warnedPlayerWorldGenNull;
+        static bool _warnedStreamingPaused;
+        static bool _warnedGpuNotInitialized;
+        static bool _warnedGpuSlotsFull;
+        static bool _warnedColumnChunksZero;
 
         bool _safeSpawnInitialized;
         int _safeSpawnWorldX0;
@@ -244,6 +265,14 @@ namespace TerraVoxel.Voxel.Streaming
         ChunkWorkDropManager _workDrop;
         ChunkSafeSpawnManager _safeSpawn;
         ChunkPhysicsManager _physics;
+
+        GpuWorldState _gpuWorldState;
+        GpuChunkGenerator _gpuChunkGenerator;
+        GpuChunkAnalyzer _gpuChunkAnalyzer;
+        GpuMesher _gpuMesher;
+        GpuCuller _gpuCuller;
+        GpuReadbackManager _gpuReadbackManager;
+        Dictionary<int, uint> _gpuSlotFlags = new Dictionary<int, uint>();
 
         bool HasAnySolid(ChunkData data)
         {
@@ -399,6 +428,10 @@ namespace TerraVoxel.Voxel.Streaming
         public long LastTotalMs => _lastTotalMs;
         public long LastIntegrationMs => _lastIntegrationMs;
         public Transform PlayerTransform => player;
+        public bool UseGpuPipeline => useGpuPipeline;
+        public SrpBatchingConfig SrpBatchingConfig => srpBatchingConfig;
+        public GpuWorldState GpuWorldState => _gpuWorldState;
+        public GpuReadbackManager GpuReadbackManager => _gpuReadbackManager;
         public IEnumerable<KeyValuePair<ChunkCoord, Chunk>> ActiveChunks => _active;
         public bool IsPreloaded(ChunkCoord coord) => _preloaded.Contains(coord);
         public int CachedChunksCount => _dataCache.Count;
@@ -439,15 +472,21 @@ namespace TerraVoxel.Voxel.Streaming
                 return;
             }
             addColliders = enabled;
+            float chunkWorldSize = worldGen != null ? worldGen.ChunkSize * VoxelConstants.VoxelSize : 0f;
             foreach (var chunk in _active.Values)
             {
                 if (chunk == null) continue;
                 if (_preloaded.Contains(chunk.Coord))
                 {
                     chunk.SetColliderEnabled(false);
+                    if (chunk.IsGpuRendered)
+                        chunk.SetGpuBoxCollider(false, 0f);
                     continue;
                 }
-                chunk.SetColliderEnabled(enabled);
+                if (chunk.IsGpuRendered)
+                    chunk.SetGpuBoxCollider(enabled, chunkWorldSize);
+                else
+                    chunk.SetColliderEnabled(enabled);
             }
         }
 
@@ -461,6 +500,7 @@ namespace TerraVoxel.Voxel.Streaming
         {
             EnsurePrefab();
             _pool = new ChunkPool(chunkPrefab, transform);
+            _pool.UseGpuPipeline = useGpuPipeline;
             _generator = new ChunkGenerator();
             if (saveManager == null) saveManager = GetComponent<ChunkSaveManager>();
             if (modManager == null) modManager = GetComponent<ChunkModManager>();
@@ -497,6 +537,49 @@ namespace TerraVoxel.Voxel.Streaming
                 srpBatchingConfig.Configure();
             else
                 ConfigureVoxelMaterialLegacy();
+
+            if (useGpuPipeline && worldGen != null)
+            {
+                int chunkSize = worldGen.ChunkSize;
+                _gpuWorldState = new GpuWorldState(gpuMaxChunks, chunkSize);
+                _gpuReadbackManager = new GpuReadbackManager();
+                ComputeShader voxelGen = gpuPipelineComputeAssets != null && gpuPipelineComputeAssets.HasAll ? gpuPipelineComputeAssets.voxelGeneration : voxelGenerationCompute;
+                ComputeShader chunkAnal = gpuPipelineComputeAssets != null && gpuPipelineComputeAssets.HasAll ? gpuPipelineComputeAssets.chunkAnalysis : chunkAnalysisCompute;
+                ComputeShader chunkCull = gpuPipelineComputeAssets != null && gpuPipelineComputeAssets.HasAll ? gpuPipelineComputeAssets.chunkCulling : chunkCullingCompute;
+                ComputeShader voxelMesh = gpuPipelineComputeAssets != null && gpuPipelineComputeAssets.HasAll ? gpuPipelineComputeAssets.voxelMeshing : voxelMeshingCompute;
+                if (voxelGen != null)
+                {
+                    _gpuChunkGenerator = new GpuChunkGenerator();
+                    _gpuChunkGenerator.Initialize(voxelGen);
+                    if (_generator is ChunkGenerator cg)
+                        cg.SetGpuPipeline(_gpuWorldState, _gpuChunkGenerator);
+                }
+                if (chunkAnal != null)
+                {
+                    _gpuChunkAnalyzer = new GpuChunkAnalyzer();
+                    _gpuChunkAnalyzer.Initialize(chunkAnal);
+                }
+                if (chunkCull != null)
+                {
+                    _gpuCuller = new GpuCuller();
+                    _gpuCuller.Initialize(chunkCull);
+                    if (occlusionCuller != null)
+                        occlusionCuller.SetGpuPipeline(_gpuWorldState, _gpuCuller, enableGpu: true);
+                }
+                if (voxelMesh != null)
+                {
+                    _gpuMesher = new GpuMesher();
+                    _gpuMesher.Initialize(voxelMesh);
+                }
+                if (gpuDrivenRenderer != null)
+                {
+                    gpuDrivenRenderer.SetWorldState(_gpuWorldState);
+                    if (voxelMaterialLibrary != null)
+                        gpuDrivenRenderer.ConfigureFromVoxelMaterial(voxelMaterialLibrary);
+                }
+                if (voxelGen == null || chunkCull == null || voxelMesh == null)
+                    Debug.LogWarning("[ChunkManager] GPU pipeline enabled but one or more compute shaders missing (VoxelGeneration, ChunkCulling, VoxelMeshing). Assign all in Inspector or via GpuPipelineComputeAssets. GPU spawn/rendering will be limited until then.");
+            }
         }
 
         void ConfigureVoxelMaterialLegacy()
@@ -515,7 +598,15 @@ namespace TerraVoxel.Voxel.Streaming
 
         void Update()
         {
-            if (player == null || worldGen == null) return;
+            if (player == null || worldGen == null)
+            {
+                if (!_warnedPlayerWorldGenNull)
+                {
+                    _warnedPlayerWorldGenNull = true;
+                    Debug.LogWarning("[ChunkManager] Player or WorldGen is not assigned. Assign in Inspector to spawn chunks. Streaming disabled until then.");
+                }
+                return;
+            }
             if (chunkPrefab == null)
             {
                 EnsurePrefab();
@@ -546,6 +637,11 @@ namespace TerraVoxel.Voxel.Streaming
             if (_integration != null) _integration.ProcessIntegrationQueue();
             if (streamingPaused)
             {
+                if (!_warnedStreamingPaused)
+                {
+                    _warnedStreamingPaused = true;
+                    Debug.LogWarning("[ChunkManager] Streaming is paused. No new chunks will spawn until Streaming Paused is unchecked.");
+                }
                 if (enableEdgeOnlyRemesh)
                 {
                     if (_jobs != null) _jobs.ProcessFaceMeshJobs();
@@ -587,8 +683,33 @@ namespace TerraVoxel.Voxel.Streaming
                 if (_lod != null) _lod.ProcessFarRangeLod();
                 else ProcessFarRangeLod();
             }
+            if (useGpuPipeline && _gpuChunkAnalyzer != null && _gpuChunkAnalyzer.IsValid && _gpuWorldState != null)
+            {
+                // Throttle: run full analysis every 2nd frame to reduce cost (maxChunks * voxelsPerChunk is heavy).
+                if ((Time.frameCount & 1) == 0)
+                    _gpuChunkAnalyzer.ScheduleAnalysis(_gpuWorldState);
+                if (_gpuReadbackManager != null)
+                    _gpuReadbackManager.RequestAllDescriptorFlags(_gpuWorldState, (flags) => { _gpuSlotFlags = flags; });
+            }
             if (occlusionCuller != null)
                 occlusionCuller.Tick(this);
+            if (useGpuPipeline && _gpuReadbackManager != null)
+                _gpuReadbackManager.Update();
+            // GPU pipeline: single call site for GpuCuller.Cull (ChunkOcclusionCuller.Tick returns early when useGpu).
+            if (useGpuPipeline && _gpuWorldState != null && gpuDrivenRenderer != null)
+            {
+                Camera cam = Camera.main;
+                if (cam != null)
+                {
+                    if (_gpuCuller != null && _gpuCuller.IsValid && worldGen != null)
+                    {
+                        float chunkWorldSize = worldGen.ChunkSize * VoxelConstants.VoxelSize;
+                        if (chunkWorldSize > 0f)
+                            _gpuCuller.Cull(_gpuWorldState, cam, chunkWorldSize);
+                    }
+                    gpuDrivenRenderer.Render(cam);
+                }
+            }
             if (_physics != null)
                 _physics.Tick();
             else if (physicsOptimizer != null)
@@ -778,6 +899,12 @@ namespace TerraVoxel.Voxel.Streaming
         void OnDestroy()
         {
             CompleteAllJobs();
+            _gpuChunkAnalyzer?.Dispose();
+            _gpuChunkAnalyzer = null;
+            _gpuMesher?.Dispose();
+            _gpuMesher = null;
+            _gpuWorldState?.Dispose();
+            _gpuWorldState = null;
 
             if (hybridSave != null)
                 hybridSave.HandleAllChunksDestroyed(_active.Values);

@@ -3,7 +3,7 @@ using UnityEngine;
 namespace TerraVoxel.Voxel.Generation
 {
     /// <summary>
-    /// Global parameters for world generation.
+    /// Per-world parameters for world generation. Overrides default VoxelConstants (e.g. ChunkSize) where used.
     /// </summary>
     [CreateAssetMenu(menuName = "TerraVoxel/World Gen Config", fileName = "WorldGenConfig")]
     public class WorldGenConfig : ScriptableObject
@@ -17,6 +17,12 @@ namespace TerraVoxel.Voxel.Generation
         public float HorizontalScale = 0.01f;
         public bool EnableRivers = false;
         public int DefaultMaterialIndex = 2;
+
+        void OnValidate()
+        {
+            ChunkSize = Mathf.Max(1, ChunkSize);
+            ColumnChunks = Mathf.Max(1, ColumnChunks);
+        }
 
         [Header("Safe Spawn Platform")]
         public bool EnableSafeSpawn = true;

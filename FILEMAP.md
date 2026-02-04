@@ -2,44 +2,183 @@
 
 Оновлено: 2026-01-23
 
+## Діаграма взаємодій у проекті (повна)
+
+Нижче — як взаємодіють усі частини проекту: гравець/камера, стрімінг, CPU-фасади, GPU-пайплайн, буфери, compute-шейдери, рендер і збереження.
+
+```mermaid
+flowchart TB
+    subgraph Input ["Вхід: гравець і камера"]
+        PT[PlayerTracker]
+        CAM[Camera]
+    end
+
+    subgraph CPU ["CPU — оркестратори та фасади"]
+        CM[ChunkManager]
+        subgraph Partials [ChunkManager partials]
+            Loader[ChunkLoader\nMaintainRadius]
+            Pending[ChunkManager.Pending\npending/preload]
+            Lifecycle[ChunkManager.Lifecycle\nProcessPending/Preload]
+            Spawn[ChunkManager.Spawn\nSpawnChunk / SpawnChunkGpu]
+            Removal[ChunkManager.Removal\nRemoveChunk, FreeChunk]
+            Jobs[ChunkManager.Jobs\nScheduleGen/Mesh → GPU dispatch]
+            Cache[ChunkManager.Cache\nGPU World State = primary]
+            Neighbors[ChunkManager.Neighbors\nRemesh, сусіди]
+        end
+        subgraph Facades [Facades]
+            CG[ChunkGenerator]
+            GM[GreedyMesher]
+            OC[ChunkOcclusionCuller]
+            CL[ChunkLodManager]
+            CSM[ChunkSaveManager]
+            CMM[ChunkModManager]
+            CHSM[ChunkHybridSaveManager]
+            VMB[VoxelMaterialBinder]
+        end
+    end
+
+    subgraph GPU ["GPU — єдине джерело істини"]
+        GWS[GpuWorldState]
+        ALLOC[GpuSlotAllocator\nallocate / free, generation id]
+        VB[(VoxelBuffer)]
+        MB[(MeshBuffer)]
+        CD[(ChunkDescriptors\n+ ExpectedGeneration)]
+        VF[(VisibilityFlags)]
+        DA[(DrawArgs)]
+
+        subgraph Pipeline [Per-frame pipeline]
+            GEN[GpuChunkGenerator\nVoxelGeneration.compute]
+            ANAL[GpuChunkAnalyzer\nChunkAnalysis.compute]
+            CULL[GpuCuller\nChunkCulling.compute]
+            MESH[GpuMesher\nVoxelMeshing.compute]
+            BUILD[BuildDrawCommands]
+            DRAW[GpuDrivenRenderer\nDrawProceduralIndirect]
+        end
+
+        RB[GpuReadbackManager\nAsyncGPUReadback]
+    end
+
+    subgraph Compute [Compute Shaders]
+        VG[VoxelGeneration.compute\nGenerateChunk]
+        CA[ChunkAnalysis.compute\nClearCounts, AnalyzeChunkCount,\nAnalyzeChunkFlags, DownsampleLOD]
+        CC[ChunkCulling.compute\nFrustumCull, OcclusionCull,\nBuildDrawCommands]
+        VM[VoxelMeshing.compute\nDetectFaces, PrefixSum,\nGenerateVertices]
+        ER[Erosion.compute\noptional]
+    end
+
+    subgraph IO [Диск і Save/Load]
+        DISK[(Save Files\nsnapshot / delta)]
+        SaveBin[ChunkSaveBinary\nChunkModBinary]
+    end
+
+    PT --> CM
+    CAM --> OC
+    CM --> Partials
+    CM --> Facades
+
+    Loader --> Spawn
+    Pending --> Lifecycle
+    Lifecycle --> Spawn
+    Spawn --> GWS
+    Spawn --> CSM
+    Spawn --> CMM
+    Spawn --> CHSM
+    Removal --> GWS
+    Removal --> RB
+    Removal --> CHSM
+    Jobs --> CG
+    Jobs --> MESH
+    Cache --> GWS
+
+    CG --> GEN
+    GM --> MESH
+    OC --> CULL
+    CL --> ANAL
+
+    GWS --> ALLOC
+    GWS --> VB
+    GWS --> MB
+    GWS --> CD
+
+    GEN --> VG
+    VG --> VB
+    ANAL --> CA
+    CA --> CD
+    CULL --> CC
+    CC --> VF
+    CC --> DA
+    MESH --> VM
+    VM --> MB
+    BUILD --> DA
+    DRAW --> DA
+    DRAW --> MB
+
+    CSM --> RB
+    CMM --> RB
+    CHSM --> RB
+    CHSM --> CSM
+    CHSM --> CMM
+    RB --> VB
+    RB --> SaveBin
+    SaveBin --> DISK
+    DISK --> SaveBin
+    SaveBin --> RB
+    RB --> VB
+
+    VMB --> DRAW
+```
+
+**Послідовність на кадр (GPU pipeline):**
+
+1. **CPU:** `ChunkManager.Update` → MaintainRadius, ProcessPending/Preload → allocate/free слотів (GpuWorldState), SpawnChunkGpu (load from cache/snapshot → upload або schedule GPU generation).
+2. **GPU:** GenerateChunk (нові чанки) → AnalyzeChunk (ClearCounts → AnalyzeChunkCount → AnalyzeChunkFlags) → FrustumCull + OcclusionCull → MeshChunk (тільки visible) → BuildDrawCommands → DrawProceduralIndirect.
+3. **CPU (опційно):** GpuReadbackManager — AsyncGPUReadback для save; ChunkSaveManager/ChunkModManager/ChunkHybridSaveManager серіалізують і пишуть на диск; при load — завантаження в буфер і upload у VoxelBuffer через GpuWorldState.
+
+**Правило:** GPU = єдине джерело істини для вокселів, мешів і видимості; CPU лише оркеструє (scheduling, IO, gameplay). CPU fallback доступний тільки під `#if UNITY_EDITOR && ALLOW_CPU_FALLBACK`.
+
+---
+
 ## Структура voxel-підсистеми (Assets/Scripts/Voxel)
+
+**Легенда:** **Facade** — CPU делегує GPU; **Адаптація** — зміни під GPU; **Без змін** — як раніше.
+
 - Core/
-  - `VoxelConstants.cs` — константи масштабу (ChunkSize=32, ColumnChunks=8, VoxelSize=0.1m).
-  - `VoxelMath.cs` — clamp‑утиліти для безпечних конвертацій координат.
-  - `ChunkCoord.cs` — координата чанка (X,Y,Z), легкий GetHashCode/Equals/ToString.
-  - `VoxelMaterial.cs` — ushort enum (Air, Dirt, Stone, Sand, Water).
-  - `ChunkData.cs` — буфери NativeArray<ushort> Materials, NativeArray<float> Density (опційний); Index/Bounds; Allocate/Dispose.
-  - `Chunk.cs` — MonoBehaviour для інстансу чанка; MeshFilter/Renderer/Collider + Mesh; ApplyMesh/ApplySharedMesh вмикають renderer за наявності mesh; LodStep, UsesSvo, LodStartTime.
-  - `ChunkPool.cs` — пул Chunk-інстансів; активує отримані.
+  - `VoxelConstants.cs` — константи масштабу (ChunkSize=32, ColumnChunks=8, VoxelSize=0.1m). **Без змін.**
+  - `VoxelMath.cs` — clamp‑утиліти для безпечних конвертацій координат. **Без змін.**
+  - `ChunkCoord.cs` — координата чанка (X,Y,Z), легкий GetHashCode/Equals/ToString. **Без змін.**
+  - `VoxelMaterial.cs` — ushort enum (Air, Dirt, Stone, Sand, Water). **Без змін.**
+  - `ChunkData.cs` — буфери NativeArray<ushort> Materials, NativeArray<float> Density (опційний); Index/Bounds; Allocate/Dispose. **Адаптація:** CPU копія тільки для Save/Readback; GpuOffset/GpuSlot для GPU World State.
+  - `Chunk.cs` — **Facade:** MonoBehaviour чанка; ApplyMesh → ApplyGpuMeshRef(slot, offset) при GPU mode; MeshFilter вимкнено при GPU; LodStep, UsesSvo, LodStartTime.
+  - `ChunkPool.cs` — пул Chunk-інстансів; при GPU mode — пул stub-чанків (без Mesh) або без GameObject для distant LOD. **Facade.**
 
 - Generation/
-  - `WorldGenConfig.cs` (SO) — Seed, ChunkSize, ColumnChunks, BaseHeight, HeightScale, HorizontalScale, EnableRivers, DefaultMaterialIndex; safe‑spawn платформа (EnableSafeSpawn, SizeChunks, Thickness, MaterialIndex, Snap, Revalidate).
-  - `NoiseStack.cs` (SO) — масив NoiseLayer (Type: Perlin/Simplex/Voronoi, Scale, Octaves, Persistence, Lacunarity, Weight).
-  - `RockStrataConfig.cs` (SO) — болванка для товщин шарів (sed/met/ig).
-  - `IChunkGenerator.cs` — інтерфейс генератора (Schedule з опційним startIndex/count для slicing).
-  - `ChunkGenerator.cs` — Burst IJobParallelFor для heightmap; підтримує генерацію по діапазону (slicing).
+  - `WorldGenConfig.cs` (SO) — конфіг світу; передається в GpuChunkGenerator. **Без змін.**
+  - `NoiseStack.cs` (SO) — масив NoiseLayer; upload у ComputeBuffer для VoxelGeneration.compute. **Без змін.**
+  - `RockStrataConfig.cs` (SO) — болванка товщин шарів; параметри для GPU generation. **Без змін.**
+  - `IChunkGenerator.cs` — **Адаптація:** додано `SupportsGpuGeneration`, `ScheduleGpuGeneration`.
+  - `ChunkGenerator.cs` — **Facade:** делегує `GpuChunkGenerator.ScheduleGeneration(state, coord, slot)`; CPU fallback тільки `#if UNITY_EDITOR && ALLOW_CPU_FALLBACK`.
 
 - Meshing/
-  - `MeshData.cs` — NativeList<Vertex/Index/Normal>, Dispose.
-  - `GreedyMesher.cs` — Burst greedy‑merge, face‑culling; 4-wide interior mask fill (InteriorIndex, MaskCellFromPair); NeighborData для меж чанків; опційний масштаб вокселя.
-  - `MeshBuilder.cs` — копіює MeshData в Unity Mesh через NativeArray view.
+  - `MeshData.cs` — NativeList вершин/індексів; тільки для CPU fallback / SVO. **Без змін.**
+  - `GreedyMesher.cs` — **Facade:** делегує `GpuMesher.MeshChunk(state, chunkIndex)`; face extraction на GPU, не greedy; CPU fallback вимкнено в release.
+  - `MeshBuilder.cs` — **Facade:** при GPU mode — NOP (меш на GPU); при CPU/SVO — копія MeshData → Mesh.
 
 - Streaming/
-  - `PlayerTracker.cs` — перетворення world→chunk координат.
-  - `ChunkTask.cs` — enum стани (PendingGen/…); struct для даних задач (не використовується поки).
-  - `ChunkManager.cs` — фасад MonoBehaviour (partial): поля, структури (GenTask, MeshTask, CachedChunkData тощо), буфери для DropWorkQueues (_dropPendingKeep тощо); Awake/Update, публічний API, делегування модулям; fallback DropWorkQueues/ActivatePreloadedChunk/OnDestroy, safe‑spawn stubs.
-  - `ChunkManager.Context.cs` — partial: внутрішній клас Context, через який модулі отримують доступ до полів і методів Owner (Active, черги, ліміти, EnsurePrefab, IsChunkBusy, QueueRemesh тощо).
-  - **Менеджер кешу:** `ChunkCacheManager.cs` — модуль (internal): CacheChunkData, ComputeMeshCacheHash, TryQueueCachedMesh, Register/Release/Evict mesh cache, TryLoadFromCache, ReleaseFaceCacheForChunk; при _cache!=null ChunkManager делегує йому. Fallback при _cache==null — `ChunkManager.Cache.cs` (partial): ті самі методи в тілі ChunkManager.
-  - **Логіка сусідів:** `ChunkManager.Neighbors.cs` — partial ChunkManager (окремого менеджера немає): TryGetChunk, RequestRemesh, ApplyChunkLayer, SetLayerRecursively, RebuildNeighbors, RebuildNeighborsInner, InvalidateNeighborFace, QueueRemesh, TryDequeueClosestRemesh.
-  - `ChunkManager.Removal.cs` — partial: ProcessRemovalQueue, QueueRemoval, RemoveChunk.
-  - `ChunkManager.Pending.cs` — partial: pending queue, радіуси; TryFindClosestPending — O(log n) через min-heap за 2D відстанню (_pendingDistanceHeap) при відсутності viewCone; TryDequeuePending при viewCone.Enabled використовує viewCone heap (O(log n)); ShouldRebuildPending, RebuildPendingQueue, DropOnePendingOldest, TryFindFarthestPending, IsWithinKeepRadius, IsWithinLoadRadius, GetInitialLodStep.
-  - `ChunkManager.Jobs.cs` — partial: gen/mesh/face jobs (CompleteAllJobs, ProcessGenJobs, ProcessMeshJobs, IsChunkBusy, IsChunkGenerating, ScheduleGenJob, ScheduleMeshForChunk, GatherNeighborCopies, GatherNeighborCopiesLod, DownsampleMaterials, GetMeshMaterialSettings, ProcessFaceRemeshQueue, ProcessFaceMeshJobs, ScheduleFaceRemeshJobAsync, ProcessRemeshQueue).
-  - `ChunkManager.Spawn.cs` — partial: EnsurePrefab, ActivatePreloadedChunk, SpawnChunk.
-  - `ChunkManager.Lifecycle.cs` — partial: MaintainRadius, ProcessFarRangeLod, ProcessPending, ProcessPreload.
-  - `ChunkLoader.cs` — модуль (internal): MaintainRadius, ProcessPending, ProcessPreload, ProcessRemovalQueue; делегує SpawnChunk/RemoveChunk/QueueRemoval/TryDequeuePending/IsWithinLoadRadius до Owner.
-  - `ChunkJobsManager.cs` — модуль: ProcessGenJobs, ProcessMeshJobs, ProcessFaceMeshJobs, ProcessFaceRemeshQueue, ProcessRemeshQueue, ScheduleGenJob, ScheduleMeshForChunk, ScheduleFaceRemeshJobAsync, GatherNeighborCopies, GatherNeighborCopiesLod, DownsampleMaterials, GetMeshMaterialSettings, CompleteAllJobs, IsChunkBusy, IsChunkGenerating; делегує до Owner.
-  - `ChunkIntegrationManager.cs` — модуль: ProcessIntegrationQueue, HasAnySolid, IsInIntegrationSet.
-  - `ChunkAdaptiveLimitsManager.cs` — модуль: UpdateAdaptiveLimits; throttle по gen/mesh/integration/memory/GPU, cooldown.
+  - `PlayerTracker.cs` — перетворення world→chunk координат. **Без змін.**
+  - `ChunkTask.cs` — enum стани (PendingGen/…); struct для даних задач. **Без змін.**
+  - `ChunkManager.cs` — **Головний Facade:** MonoBehaviour (partial); делегує GpuWorldState, GpuChunkGenerator, GpuMesher, GpuCuller, GpuDrivenRenderer; при GPU — allocate/free slot, SpawnChunkGpu, readback для save; fallback safe‑spawn/OnDestroy.
+  - `ChunkManager.Context.cs` — partial: Context з полями GpuWorldState, GpuChunkGenerator, GpuMesher, GpuCuller, GpuChunkAnalyzer, GpuDrivenRenderer; модулі отримують доступ до Owner (Active, черги, ліміти, EnsurePrefab, IsChunkBusy, QueueRemesh тощо).
+  - **Менеджер кешу:** `ChunkCacheManager.cs` — **Facade:** GPU World State = primary; CPU cache тільки для evicted chunks (TryLoadFromCache, Save/readback); при _cache!=null ChunkManager делегує йому; fallback — ChunkManager.Cache.cs.
+  - **Логіка сусідів:** `ChunkManager.Neighbors.cs` — partial: TryGetChunk, RequestRemesh, RebuildNeighbors; neighbor data для GPU meshing (offset у VoxelMaterialBuffer). **Адаптація.**
+  - `ChunkManager.Removal.cs` — **Facade:** RemoveChunk → GpuWorldState.FreeChunk(slot); readback для save перед free (ChunkHybridSaveManager.HandleChunkUnloadedGpu); chunk.ClearGpuMeshRef() перед поверненням у пул.
+  - `ChunkManager.Pending.cs` — partial: pending queue, радіуси; TryFindClosestPending, TryDequeuePending, ShouldRebuildPending, IsWithinKeepRadius, IsWithinLoadRadius, GetInitialLodStep. **Без змін.**
+  - `ChunkManager.Jobs.cs` — **Facade:** при GPU — ScheduleGenJob/ScheduleMeshForChunk early return (dispatch делегується GpuChunkGenerator/GpuMesher); ProcessGenJobs/ProcessMeshJobs при GPU — early return; fallback на CPU Jobs при !useGpu.
+  - `ChunkManager.Spawn.cs` — **Facade:** SpawnChunkGpu — allocate slot; TryLoadFromCache/hybridSave.TryLoadSnapshot/saveManager.TryLoadInto → GpuWorldState.SetVoxels (skip GPU gen); інакше schedule GPU generation; modManager.ApplyModsToChunk + ApplyModsToGpu; GpuChunkAnalyzer.ScheduleAnalysis, GpuMesher.MeshChunk; EnsurePrefab, ActivatePreloadedChunk, SpawnChunk (CPU path).
+  - `ChunkManager.Lifecycle.cs` — **Адаптація:** ProcessPending/ProcessPreload при GPU використовують _gpuWorldState.ChunkCount як ліміт спавнів замість _genJobs.Count.
+  - `ChunkLoader.cs` — **Facade:** MaintainRadius, ProcessPending, ProcessPreload, ProcessRemovalQueue; делегує SpawnChunk/RemoveChunk до Owner (при GPU — allocate/deallocate slots).
+  - `ChunkJobsManager.cs` — **Facade:** ProcessGenJobs/ProcessMeshJobs при GPU делегують dispatch GPU compute; fallback на Owner.
+  - `ChunkIntegrationManager.cs` — **Facade:** при GPU — integration = оновлення ChunkDescriptor; без ApplyMesh (меш на GPU).
+  - `ChunkAdaptiveLimitsManager.cs` — **Facade:** ліміти для GPU dispatch (max gen/mesh per frame); throttle по memory/GPU.
   - `ChunkWorkDropManager.cs` — модуль: MaybeDropWork, ResolveViewForward, DropWorkQueues (pending/preload/remesh/face/integration); DropWorkQueues використовує переиспользувані буфери з Context (без new List на виклик).
   - `ChunkSafeSpawnManager.cs` — модуль: TryInitSafeSpawn, ApplySafeSpawnToChunk, ReapplySafeSpawnToChunk, SnapPlayerToSafeSpawn, SetPlayerFrozen.
   - `ChunkPhysicsManager.cs` — модуль: SetCollidersEnabled, Tick; колайдери по радіусу (замість прямого виклику ChunkPhysicsOptimizer з ChunkManager).
@@ -47,12 +186,23 @@
   - `StreamingTimeBudget.cs` — ліміт часу на стрімінг за кадр.
   - `ChunkPhysicsOptimizer.cs` — колайдери тільки в активному радіусі; lock _stateLock; tooltips; PruneMissingInner doc (використовується ChunkPhysicsManager або безпосередньо ChunkManager).
   - `ChunkViewConePrioritizer.cs` — max-heap + min-heap; O(log n) dequeue (TryDequeue) і O(log n) remove-lowest (TryRemoveLowestPriority через _minHeap); при viewCone.Enabled TryDequeuePending циклом TryDequeue поки _pendingSet.Remove; EnqueueWithPriority, ComputeScore; DistanceOnly (default true) — score = 1/(1+dist); IsInViewCone; Clear() trim capacity.
+- GPU/ (GPU-driven pipeline — єдине джерело істини)
+  - `GpuWorldState.cs` — буфери (VoxelBuffer, MeshBuffer, ChunkDescriptors, ExpectedGeneration), SetVoxels/SetVoxel, AllocateChunk/FreeChunk.
+  - `GpuSlotAllocator.cs` — fixed slots, free-list, generation id; Allocate/Free/IsValid(slot, generation).
+  - `GpuChunkDescriptor.cs` — struct HLSL-aligned (coord, slotGeneration, voxelOffset, meshOffset, vertexCount, flags).
+  - `GpuChunkGenerator.cs` — dispatch VoxelGeneration.compute (GenerateChunk); параметри з WorldGenConfig/NoiseStack.
+  - `GpuChunkAnalyzer.cs` — dispatch ChunkAnalysis.compute: ClearCounts, AnalyzeChunkCount (atomics SolidCount/AirCount), AnalyzeChunkFlags, DownsampleLOD; буфери _solidCount, _airCount.
+  - `GpuMesher.cs` — dispatch VoxelMeshing.compute (face extraction, не greedy); тільки visible chunks.
+  - `GpuCuller.cs` — dispatch ChunkCulling.compute: FrustumCull, OcclusionCull, BuildDrawCommands; Hi-Z опційно.
+  - `GpuReadbackManager.cs` — AsyncGPUReadback для Save/debug; RequestChunkData(coord, callback).
+  - `GpuDrivenRenderer.cs` — DrawProceduralIndirect (MeshBuffer, DrawArgs); Material.SetBuffer для instanced shader.
+  - `GpuErosionSimulator.cs` — (Phase 8, optional) dispatch Erosion.compute.
+
 - LOD/
-  - `ChunkLodLevel.cs` — struct LOD‑рівня (MinDistance, MaxDistance, LodStep, Hysteresis, Mode); IsValid; MaxDistanceWithHysteresis (overflow‑safe, XML: use for all runtime MaxDistance+Hysteresis, int.MaxValue handled); ChunkLodMode: Mesh, Svo, Billboard, None.
-  - `ChunkLodSettings.cs` (SO) — список рівнів, DefaultLevelFarDistance (0 = disabled doc), UseDefaultHysteresisWhenZero; OnValidate (overlap/duplicate/gap/far‑range/single-chunk Min=Max warning, single pass); GetDetailRank, GetDetailRankFor; TryGetLevelForDistance; ResolveLevel hysteresis (overflow‑safe, target MaxDistance==int.MaxValue comment).
-  - `ChunkLodManager.cs` — streaming-side LOD (internal): ProcessFullLod, ProcessLodUpgrades; main-thread only, no sync; dist >= 0 before ResolveLevel; делегує ProcessFarRangeLod, GetInitialLodStep до ChunkManager.
+  - `ChunkLodLevel.cs`, `ChunkLodSettings.cs` — **Без змін.**
+  - `ChunkLodManager.cs` — **Facade:** делегує GpuChunkAnalyzer (DownsampleLOD на GPU); ResolveLevel залишається на CPU (player dist).
 - Occlusion/
-  - `ChunkOcclusionCuller.cs` — frustum + optional raycast occlusion; lock _occludedLock; _activeCoordsThisTick cleanup; recheckOccludedPerFrame (бюджет повторної перевірки _occluded щокадру); GetRaycastMask warning; AnyRayUnblocked, GetChunkBounds, RestoreAll doc.
+  - `ChunkOcclusionCuller.cs` — **Facade:** делегує GpuCuller.Cull(state, camera) — frustum + Hi-Z; fallback на raycast при !useGpu.
 - Svo/
   - `SvoVolume.cs` — структура SVO (Node byte Material/Density; RootSize, LeafSize, NativeList); Dispose() обовʼязково, safe to call multiple times; Material 0–255, >256 матеріалів потребує mapping.
   - `SvoBuilder.cs` — побудова SVO з ChunkData (queue‑based); SampleNeighbor bounds (XMin/XMax size³, Y/Z size²), early return when no face provided; caller must Dispose volume; IsUniformRegion/SampleRegionMaterialAndDensity O(size³).
@@ -60,9 +210,9 @@
   - `SvoManager.cs` — кеш SVO‑мешів, lock _cacheLock; hash‑based reuse, LRU evict (LinkedList, O(1) per evict); TryGetOrBuildMesh exception → no cache, volume disposed in finally; useGpuRaymarch not implemented (tooltip); read‑mostly.
 
 - Rendering/
-  - `VoxelMaterialLibrary.cs` (SO) — Texture2DArray, TriplanarScale, NormalStrength, DefaultLayerIndex.
-  - `VoxelMaterialBinder.cs` — на Renderer ставить `_MainTexArr`, `_TriplanarScale`, `_NormalStrength`, `_LayerIndex` з library.
-  - `SrpBatchingConfig.cs` — конфіг для SRP Batching (voxelMaterial, voxelMaterialLibrary); Configure(), ApplyToChunk(); один шейдер, без MaterialPropertyBlock для batching‑критичних властивостей.
+  - `VoxelMaterialLibrary.cs` (SO) — Texture2DArray, TriplanarScale, NormalStrength, DefaultLayerIndex. **Без змін.**
+  - `VoxelMaterialBinder.cs` — **Facade:** при GPU instancing — Material.SetBuffer("_InstanceMatrices", …) замість per-Renderer; при GPU mode перевіряє ChunkManager.UseGpuPipeline у hierarchy і пропускає CPU binding.
+  - `SrpBatchingConfig.cs` — конфіг SRP Batching (voxelMaterial, voxelMaterialLibrary); ApplyToChunk(). **Без змін.**
 
 - Systems/
   - `ChunkSaveStub.cs` — JSON‑stub (legacy, не використовується).
@@ -71,16 +221,11 @@
   - `VoxelDebugHUD.cs` — HUD, графіки, CSV‑експорт, async summary‑лог, черги/інтеграція.
 
 - Save/
-  - `ChunkSaveBinary.cs` — бінарний формат, magic+version+flags; LZ4/GZip (v1) або RLE (useRle) декомпресія; матеріали (ushort) + опційна щільність; CRC.
-  - `ChunkModBinary.cs` — бінарні дельти (index+material ushort), LZ4 або RLE (useRle), CRC.
-  - `RleCompression.cs` — RLE compress/decompress для byte[] (run = value, count 1..255); використовується в ChunkSaveBinary та ChunkModBinary при useRle.
-  - `ChunkSaveMode.cs` — enum режимів сейву + ChunkMeta.
-  - `ChunkSaveManager.cs` — async save‑черга, атомарний запис, load on spawn, save on unload/destroy; worldId/region‑папки; useRle опція; join timeout.
-  - `ChunkModManager.cs` — менеджер модифікацій (delta‑сейви), async/atomic; useRle опція; пакетні правки; join timeout.
-  - `ChunkHybridSaveManager.cs` — правила delta vs snapshot.
-  - `VoxelModDebugInput.cs` — режим взаємодії (B), перемикання dig/build (V), raycast, brush size 1‑10, форми, підсвітка.
-  - `Lz4Codec.cs` — C# LZ4‑кодек (вбудований, без зовнішніх залежностей).
-  - `Crc32.cs` — CRC32 для файлів сейву.
+  - `ChunkSaveBinary.cs`, `ChunkModBinary.cs`, `RleCompression.cs`, `ChunkSaveMode.cs`, `Lz4Codec.cs`, `Crc32.cs` — серіалізація/дельта/CRC. **Без змін.**
+  - `ChunkSaveManager.cs` — **Facade:** делегує GpuReadbackManager.RequestChunkData(coord, callback) → readback з GPU → ChunkSaveBinary.Serialize; load → upload на GPU; EnqueueSaveFromGpu(coord, onReadbackEnqueued) для звільнення слота після enqueue readback.
+  - `ChunkModManager.cs` — **Facade:** readback для save, upload для load; SetVoxel/SetVoxelsWorld при GPU — upload у GPU через GpuWorldState.SetVoxel; ApplyModsToGpu(coord) — застосування CPU-модифікацій у GPU буфер; TryGetModVoxel для debug.
+  - `ChunkHybridSaveManager.cs` — **Facade:** orchestration: TryLoadSnapshot/ApplyDeltaIfAny через GPU upload; HandleChunkUnloadedGpu — EnqueueSaveFromGpu з callback GpuWorldState.FreeChunk після enqueue readback.
+  - `VoxelModDebugInput.cs` — **Facade:** при GPU — TryGetVoxelMaterial спочатку перевіряє ChunkModManager; запис модифікацій у GPU buffer через compute.
 
 - `TerraVoxel.Voxel.asmdef` — залежності Burst/Collections/Mathematics/Jobs/URP.
 
@@ -97,20 +242,79 @@
 
 ## Шейдери / матеріали
 - `Assets/Shaders/VoxelTriplanarURP.shader` — URP opaque, тріпланар семпл Texture2DArray, параметри `_TriplanarScale`, `_LayerIndex`, `_NormalStrength`.
+- `Assets/Shaders/VoxelTriplanarURP_Instanced.shader` — URP instanced для GpuDrivenRenderer; DrawProceduralIndirect, буфери мешів/матриць.
+- **Compute Shaders (Assets/Shaders/Compute/):**
+  - `VoxelGeneration.compute` — kernel GenerateChunk (noise, heightmap, materials).
+  - `ChunkAnalysis.compute` — kernels ClearCounts, AnalyzeChunkCount (atomics SolidCount/AirCount), AnalyzeChunkFlags (empty/solid/mixed), DownsampleLOD; перевірка slotGeneration vs ExpectedGeneration.
+  - `ChunkCulling.compute` — FrustumCull, OcclusionCull, BuildDrawCommands; перевірка slotGeneration.
+  - `VoxelMeshing.compute` — DetectFaces, PrefixSum, GenerateVertices (face extraction, не greedy).
+  - `Erosion.compute` — (Phase 8, optional) SimulateWaterFlow, SimulateSediment, CommitChanges.
 
-## Потік даних (мінімальна реалізація)
-1) `ChunkManager.Update` оновлює jobs (gen/mesh), підтримує радіуси, _pending/_preload, ремеш/видалення. При наявності модулів виклики делегуються (_loader.MaintainRadius, _jobs.ProcessGenJobs тощо), інакше виконуються методи самого ChunkManager.
-2) `ProcessPending` бере до `maxSpawnsPerFrame` з pending: якщо viewCone увімкнено і **не** DistanceOnly — `viewCone.TryDequeue` (heap); інакше — `TryFindClosestPending(center)` (пріоритет за поточною відстанню до гравця). Додавання в pending — _pendingSet.Add + EnqueueWithPriority або _pendingSet; при cap — DropOnePendingOldest.
-3) `SpawnChunk`: Allocate `ChunkData` → спроба snapshot‑load (hybrid або save manager) → якщо немає, планується gen‑job.
-4) Завершення gen‑job: apply safe‑spawn (якщо треба), apply delta‑mods. Якщо initialLodFromDistance — ResolveLevel( dist ); для None — вимкнути renderer/collider; для Svo — TryGetOrBuildMesh; для Mesh — план mesh‑job з потрібним LodStep.
-5) Завершення mesh‑job: постановка в integration queue → ProcessIntegrationQueue → ApplyMesh/ApplySharedMesh (ліміт/кадр), ремеш сусідів (edge‑only або full), колайдери. Порожні чанки (HasAnySolid=false) не ремешаються безкінечно — renderer/collider вимикаються.
-6) `ProcessFullLod` (якщо `enableFullLod`): перевіряє дистанцію, обирає LOD‑рівень з `ChunkLodSettings`, виконує upgrade/downgrade (mesh або SVO) з cooldown.
-7) `ChunkOcclusionCuller.Tick`: frustum culling + optional raycast, вимикає renderer для occluded чанків; lock _occludedLock; очищення застарілих _occluded по _activeCoordsThisTick.
-8) При `RemoveChunk` (вихід з радіуса) `ChunkHybridSaveManager` або `ChunkSaveManager` + `ChunkModManager` → atomic write; `SvoManager.ReleaseForChunk`; при `OnDestroy` — save all активних.
+## Шлях спавну чанків (checklist для перевірки)
+Щоб чанки з’являлися в сцені, має виконуватися весь ланцюжок. Якщо щось не так — у консолі з’явиться одне з попереджень нижче.
+
+1. **ChunkManager.Update викликається**
+   - Player (Transform) **призначено** в Inspector → інакше: `[ChunkManager] Player or WorldGen is not assigned...`
+   - WorldGen (WorldGenConfig) **призначено** в Inspector → інакше те саме попередження.
+
+2. **Chunk prefab**
+   - chunkPrefab або призначено, або створюється в EnsurePrefab() (Awake) → інакше: `[ChunkManager] chunkPrefab is null...`
+
+3. **Стрімінг не на паузі**
+   - Streaming Paused = **false** → інакше: `[ChunkManager] Streaming is paused...`
+
+4. **MaintainRadius додає coords у pending**
+   - WorldGen.ColumnChunks **≥ 1** → інакше: `[ChunkManager] WorldGen.ColumnChunks is < 1...`
+   - loadRadius ≥ 0 (за замовчуванням 2).
+   - Після цього: _pendingSet / viewCone містять coords навколо гравця.
+
+5. **ProcessPending витягує coord і викликає SpawnChunk**
+   - PendingCount > 0, maxSpawnsPerFrame > 0.
+   - Для GPU: GpuWorldState.ChunkCount < gpuMaxChunks → інакше нові чанки не спавляться (ліміт).
+   - TryDequeuePending(center, out coord) повертає true (viewCone або _pendingSet мають coords).
+   - IsWithinLoadRadius(coord, center, loadRadius) = true.
+   - **Work Drop Angle:** якщо workDropAngleDeg > 0 і viewCone увімкнено, coord має пройти IsInViewCone. **За замовчуванням workDropAngleDeg = 0** (спавн у всі боки); якщо було 70°, жоден чанк міг не проходити перевірку і нічого не спавнилось. При skip через view cone coord тепер повертається в чергу (re-enqueue).
+
+6. **SpawnChunk / SpawnChunkGpu**
+   - **GPU path:** useGpuPipeline && _gpuWorldState != null && _gpuChunkGenerator != null && IsValid → SpawnChunkGpu. Інакше (GPU увімкнено, але не ініціалізовано): `[ChunkManager] GPU pipeline enabled but GPU not initialized...` і спавн йде по CPU.
+   - **SpawnChunkGpu:** AllocateChunk(coord) не кидає → інакше (немає вільних слотів): `[ChunkManager] GPU slot allocator full...`
+   - Пул створює/повертає Chunk (Get()), chunk додається в _active, transform.position встановлюється.
+
+7. **Відображення**
+   - **CPU:** меш будується в jobs / інтеграція, MeshFilter.sharedMesh заповнюється.
+   - **GPU:** GpuDrivenRenderer.Render(cam) малює через DrawProceduralIndirect; чанк-об’єкти в сцені (для позиції/колайдера), меш на них порожній.
+
+Перевірка: якщо чанків немає — відкрий Console і шукай `[ChunkManager]`; одне з попереджень вище вкаже на порушену умову.
+
+## Потік даних (CPU + GPU pipeline)
+1) **CPU:** `ChunkManager.Update` оновлює радіуси, _pending/_preload, ремеш/видалення; при GPU — _gpuChunkAnalyzer.ScheduleAnalysis перед occlusionCuller.Tick; ProcessPending/ProcessPreload при GPU обмежені _gpuWorldState.ChunkCount.
+2) **CPU:** ProcessPending бере до maxSpawnsPerFrame з pending (viewCone або TryFindClosestPending); при GPU SpawnChunkGpu: allocate slot → TryLoadFromCache/hybridSave.TryLoadSnapshot/saveManager.TryLoadInto → upload у GpuWorldState.SetVoxels (skip GPU gen) або schedule GpuChunkGenerator; modManager.ApplyModsToChunk + ApplyModsToGpu; GpuChunkAnalyzer.ScheduleAnalysis, GpuMesher.MeshChunk.
+3) **GPU:** GenerateChunk (нові чанки) → ChunkAnalysis (ClearCounts → AnalyzeChunkCount → AnalyzeChunkFlags, DownsampleLOD) → FrustumCull + OcclusionCull → MeshChunk (тільки visible) → BuildDrawCommands → DrawProceduralIndirect.
+4) **CPU:** ChunkOcclusionCuller.Tick при GPU делегує GpuCuller; ProcessFullLod (enableFullLod) — ResolveLevel на CPU, LOD upgrade/downgrade.
+5) **RemoveChunk (GPU):** ChunkHybridSaveManager.HandleChunkUnloadedGpu → ChunkSaveManager.EnqueueSaveFromGpu(coord, onReadbackEnqueued: GpuWorldState.FreeChunk) → readback з GPU → serialize → disk; slot звільняється після enqueue readback.
+6) **CPU fallback:** при !useGpu залишається SpawnChunk (ChunkData, gen/mesh jobs), ApplyMesh, ChunkOcclusionCuller raycast; fallback тільки `#if UNITY_EDITOR && ALLOW_CPU_FALLBACK`.
+
+## Оптимізації: CPU vs GPU pipeline
+При **UseGpuPipeline = true** усі наступні оптимізації працюють коректно (або делегуються на GPU):
+
+| Оптимізація | CPU path | GPU path |
+|-------------|----------|----------|
+| **Frustum / occlusion culling** | ChunkOcclusionCuller.Tick (CPU planes + опційно raycast) | GpuCuller.Cull один раз за кадр (ChunkCulling.compute: FrustumCull + OcclusionCull). ChunkOcclusionCuller.Tick при useGpu виходить одразу. |
+| **Colliders (радіус)** | ChunkPhysicsOptimizer вмикає/вимикає MeshCollider по activeRadius/inactiveRadius | Той самий ChunkPhysicsOptimizer вмикає/вимикає **BoxCollider** через SetGpuBoxCollider (GPU-чанки не мають мешу, тільки бокс). |
+| **Add/remove colliders (runtime)** | ChunkManager.SetCollidersEnabled → SetColliderEnabled на чанках | SetCollidersEnabled оновлює **BoxCollider** на GPU-чанках через SetGpuBoxCollider. |
+| **LOD (Full / SVO / None)** | ChunkLodManager: ProcessFullLod, upgrade/downgrade меш/SVO/None | Той самий ChunkLodManager; для GPU-чанків при Mode.None вимикається BoxCollider (SetGpuBoxCollider(false)); порожні GPU-чанки (Empty flag) пропускаються. На GPU додатково: ChunkAnalysis DownsampleLOD, меш тільки для visible. |
+| **Preload** | Спавн з SetRendererEnabled(false), SetColliderEnabled(false); активація → SetColliderEnabled(true) | Спавн з SetGpuBoxCollider при addColliders; при активації прелоаду — SetGpuBoxCollider(true) для GPU-чанків. |
+| **Load radius / unload** | ChunkLoader, GpuWorldState.ChunkCount не використовується | Той самий ChunkLoader; ліміт спавнів — GpuWorldState.ChunkCount vs GpuMaxChunks. |
+| **Cache / save-load** | ChunkCacheManager, ChunkSaveManager, TryLoadFromCache | При GPU: GpuWorldState = primary; TryLoadFromCache/hybridSave.TryLoadSnapshot → GpuWorldState.SetVoxels; save через GpuReadbackManager + ChunkHybridSaveManager. |
+| **Gen/Mesh jobs** | ChunkJobsManager, ProcessGenJobs/ProcessMeshJobs (Burst) | При GPU ProcessGenJobs/ProcessMeshJobs no-op; генерація/меш на GPU (GpuChunkGenerator, GpuMesher). |
+| **Integration queue** | ChunkIntegrationManager об’єднує готові меші з чанками | При GPU черга інтеграції порожня (меш не на чанках). |
+
+Підсумок: **усі оптимізації (culling, колайдери по радіусу, LOD, preload, радіуси, кеш, save/load) працюють і для GPU**; там, де потрібно, використовується SetGpuBoxCollider замість MeshCollider, а culling виконується в compute (ChunkCulling.compute).
 
 ## Що вже зроблено / статус TODO
-- Готово: константи/структури/пул; генератор (heightmap, Burst) + slicing; greedy‑meshing з neighbor‑culling; стрімінг із чергами/лімітами + інтеграція; view‑cone з DistanceOnly (пріоритет за відстанню через TryFindClosestPending); mesh/data cache; lock-free integration queue (ConcurrentQueue + ConcurrentDictionary) + recursion guards; safe spawn timeout + fallback; pending _pendingSet membership; initial LOD from distance; edge‑only remesh async; scaleJobsByProcessorCount; SRP Batching; LOD overflow/hysteresis fix; empty chunk remesh fix; RebuildNeighborsInner Y bounds; seam skirts; повний LOD + occlusion + SVO; StreamingTimeBudget; тріпланар шейдер + SrpBatchingConfig/VoxelMaterialLibrary/VoxelMaterialBinder; LZ4‑chunk save; 256‑палітра; analysis mode; VoxelDebugHUD; **модуляризація ChunkManager** (ChunkLoader, ChunkJobsManager, ChunkIntegrationManager, ChunkLodManager, **ChunkCacheManager** (менеджер кешу), **ChunkManager.Neighbors** (partial — логіка сусідів), ChunkAdaptiveLimitsManager, ChunkWorkDropManager, ChunkSafeSpawnManager, ChunkPhysicsManager + ChunkManager.Context).
-- Немає (потрібно доробити): strata/rivers/biomes/erosion; вода; far‑range LOD pipeline (spawn render‑only поза unloadRadius); greedy‑зшивання між чанками; Impostors/Billboards рендер; GPU Instancing; повноцінний save/load менеджер (світ/інв/позиція); рушійний контролер гравця (зовнішній).
+- Готово: константи/структури/пул; генератор (heightmap, Burst) + slicing; greedy‑meshing з neighbor‑culling; стрімінг із чергами/лімітами + інтеграція; view‑cone; mesh/data cache; LOD + occlusion + SVO; StreamingTimeBudget; тріпланар шейдер + SrpBatchingConfig/VoxelMaterialLibrary/VoxelMaterialBinder; LZ4‑chunk save; 256‑палітра; analysis mode; VoxelDebugHUD; модуляризація ChunkManager.
+- **GPU-Driven (Phases 0–9):** GpuWorldState, GpuSlotAllocator, GpuChunkDescriptor; GpuChunkGenerator + VoxelGeneration.compute; GpuChunkAnalyzer + ChunkAnalysis.compute (ClearCounts, AnalyzeChunkCount, AnalyzeChunkFlags, DownsampleLOD, slotGeneration check); GpuCuller + ChunkCulling.compute; GpuMesher + VoxelMeshing.compute; GpuDrivenRenderer + DrawProceduralIndirect + VoxelTriplanarURP_Instanced; GpuReadbackManager; ChunkSaveManager/ChunkModManager/ChunkHybridSaveManager Facade (readback → serialize, load → upload); ChunkManager full integration (SpawnChunkGpu, cache/snapshot load → GPU upload, ApplyModsToGpu, slot limit); GpuErosionSimulator + Erosion.compute (optional). CPU fallback тільки `#if UNITY_EDITOR && ALLOW_CPU_FALLBACK`.
+- Немає (потрібно доробити): strata/rivers/biomes; вода; far‑range LOD pipeline (spawn render‑only поза unloadRadius); greedy‑зшивання між чанками; Impostors/Billboards рендер; повноцінний save/load менеджер (світ/інв/позиція); рушійний контролер гравця (зовнішній).
 
 ### Палітра 256 кольорів (індекси → базові кольори × яскравість)
 - Сгенеровано в `Assets/Editor/PaletteTextureArrayBuilder.cs`.
@@ -171,7 +375,7 @@
 ## Налаштування за замовчуванням (рекомендовано для тесту)
 - `WorldGenConfig`: ChunkSize=32, ColumnChunks=1, BaseHeight=8..16, HeightScale=12..24, HorizontalScale=0.015..0.02, Seed=будь-який.
 - `NoiseStack`: один шар Perlin, Scale=0.5..1.0, Octaves=4, Persistence=0.5, Lacunarity=2.0, Weight=1.0.
-- `ChunkManager`: loadRadius=1..2, maxSpawnsPerFrame=1..2, AddColliders=false (спочатку).
+- `ChunkManager`: loadRadius=1..2, maxSpawnsPerFrame=1..2, AddColliders=true (для GPU — BoxCollider на чанк).
 
 ## Що робити далі (пріоритети)
 1) CPU‑оптимізації (ROADMAP): TryFindClosestPending O(n)→просторова структура; pool для List у DropWorkQueues/MaintainRadius; троттлинг ProcessFullLod; frame budgeting у всіх циклах.

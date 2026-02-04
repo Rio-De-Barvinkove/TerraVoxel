@@ -6,6 +6,7 @@
         "Unity.Collections",
         "Unity.Mathematics",
         "Unity.Jobs",
+        "Unity.RenderPipelines.Core.Runtime",
         "Unity.RenderPipelines.Universal.Runtime"
     ],
     "includePlatforms": [],

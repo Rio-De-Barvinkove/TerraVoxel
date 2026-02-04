@@ -1,4 +1,5 @@
 using TerraVoxel.Voxel.Core;
+using TerraVoxel.Voxel.GPU;
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
@@ -8,10 +9,23 @@ using UnityEngine;
 namespace TerraVoxel.Voxel.Generation
 {
     /// <summary>
-    /// Heightmap-based generator with Burst job.
+    /// Heightmap-based generator. Facade: when useGpu and GpuPipeline set, delegates to GpuChunkGenerator; otherwise runs Burst job. Schedule returns empty layers and default handle when useGpu (caller must still dispose layers).
     /// </summary>
     public class ChunkGenerator : IChunkGenerator
     {
+        bool useGpu = true;
+        GpuChunkGenerator _gpuChunkGenerator;
+        GpuWorldState _gpuWorldState;
+
+        /// <summary>Enable GPU generation when GpuChunkGenerator and GpuWorldState are set.</summary>
+        public bool UseGpu { get => useGpu; set => useGpu = value; }
+        public bool SupportsGpuGeneration => useGpu && _gpuChunkGenerator != null && _gpuWorldState != null;
+        /// <summary>Set for GPU path. When both are set, ScheduleGpuGeneration dispatches to GPU.</summary>
+        public void SetGpuPipeline(GpuWorldState worldState, GpuChunkGenerator gpuGenerator)
+        {
+            _gpuWorldState = worldState;
+            _gpuChunkGenerator = gpuGenerator;
+        }
         [BurstCompile]
         struct ChunkGeneratorJob : IJobParallelFor
         {
@@ -87,8 +101,27 @@ namespace TerraVoxel.Voxel.Generation
             }
         }
 
+        /// <summary>Schedule GPU generation (coord, slot). Call when useGpu and GpuPipeline set; no ChunkData needed.</summary>
+        public void ScheduleGpuGeneration(GpuWorldState state, ChunkCoord coord, int slot, WorldGenConfig config, NoiseStack noiseStack)
+        {
+            var s = state != null ? state : _gpuWorldState;
+            if (useGpu && _gpuChunkGenerator != null && _gpuChunkGenerator.IsValid && s != null)
+            {
+                _gpuChunkGenerator.ScheduleGeneration(s, coord, slot, config, noiseStack);
+                return;
+            }
+#if UNITY_EDITOR && ALLOW_CPU_FALLBACK
+            Debug.LogWarning("[ChunkGenerator] ScheduleGpuGeneration called but GPU not configured; no work done.");
+#endif
+        }
+
         public JobHandle Schedule(ChunkData data, ChunkCoord coord, WorldGenConfig config, NoiseStack noiseStack, out NativeArray<NoiseLayer> layers, int startIndex = 0, int count = -1)
         {
+            if (useGpu && _gpuChunkGenerator != null && _gpuWorldState != null)
+            {
+                layers = new NativeArray<NoiseLayer>(0, Allocator.Persistent);
+                return default;
+            }
             layers = (noiseStack != null && noiseStack.Layers != null)
                 ? new NativeArray<NoiseLayer>(noiseStack.Layers, Allocator.Persistent)
                 : new NativeArray<NoiseLayer>(0, Allocator.Persistent);
@@ -140,8 +173,10 @@ namespace TerraVoxel.Voxel.Generation
             layers.Dispose();
         }
 
+        /// <summary>Sample terrain height at world X,Z using config and noise stack. Returns 0 if config is null.</summary>
         public static float SampleHeightAt(int worldX, int worldZ, WorldGenConfig config, NoiseStack stack)
         {
+            if (config == null) return 0f;
             float totalWeight = 0f;
             float value = 0f;
 

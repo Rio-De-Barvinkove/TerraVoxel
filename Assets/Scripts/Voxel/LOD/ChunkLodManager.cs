@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
+using TerraVoxel.Voxel.GPU;
 using TerraVoxel.Voxel.Streaming;
 using UnityEngine;
 
@@ -41,6 +42,8 @@ namespace TerraVoxel.Voxel.Lod
                 if (chunk == null) continue;
                 if (_ctx.Preloaded.Contains(coord)) continue;
                 if (_ctx.IsChunkBusy(coord) || _ctx.Integration.IsInIntegrationSet(coord) || _ctx.PendingCachedMeshes.ContainsKey(coord)) continue;
+                if (_ctx.UseGpuPipeline && chunk.IsGpuRendered && chunk.Data.GpuSlot >= 0 && (_ctx.GetGpuChunkFlags(chunk.Data.GpuSlot) & ChunkDescriptorFlags.Empty) != 0)
+                    continue;
 
                 int dist = Mathf.Max(0, Mathf.Max(Mathf.Abs(coord.X - center.X), Mathf.Abs(coord.Z - center.Z)));
                 ChunkLodMode currentMode = chunk.UsesSvo ? ChunkLodMode.Svo : ChunkLodMode.Mesh;
@@ -76,7 +79,10 @@ namespace TerraVoxel.Voxel.Lod
                 if (desired.Mode == ChunkLodMode.None)
                 {
                     chunk.SetRendererEnabled(false);
-                    chunk.SetColliderEnabled(false);
+                    if (chunk.IsGpuRendered)
+                        chunk.SetGpuBoxCollider(false, 0f);
+                    else
+                        chunk.SetColliderEnabled(false);
                     chunk.UsesSvo = false;
                     chunk.LodStep = desired.LodStep;
                     chunk.IsLowLod = true;
@@ -130,7 +136,10 @@ namespace TerraVoxel.Voxel.Lod
                 if (desired.Mode == ChunkLodMode.None)
                 {
                     chunk.SetRendererEnabled(false);
-                    chunk.SetColliderEnabled(false);
+                    if (chunk.IsGpuRendered)
+                        chunk.SetGpuBoxCollider(false, 0f);
+                    else
+                        chunk.SetColliderEnabled(false);
                     chunk.UsesSvo = false;
                     chunk.LodStep = desired.LodStep;
                     chunk.IsLowLod = true;
@@ -212,6 +221,8 @@ namespace TerraVoxel.Voxel.Lod
                 if (!_ctx.IsWithinLoadRadius(coord, center, _ctx.LoadRadius)) continue;
                 if (_ctx.IsChunkBusy(coord)) continue;
                 if (_ctx.Integration.IsInIntegrationSet(coord) || _ctx.PendingCachedMeshes.ContainsKey(coord)) continue;
+                if (_ctx.UseGpuPipeline && chunk.IsGpuRendered && chunk.Data.GpuSlot >= 0 && (_ctx.GetGpuChunkFlags(chunk.Data.GpuSlot) & ChunkDescriptorFlags.Empty) != 0)
+                    continue;
 
                 chunk.IsLowLod = false;
                 chunk.LodStartTime = 0;

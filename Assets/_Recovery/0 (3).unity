@@ -356,6 +356,7 @@ GameObject:
   - component: {fileID: 448214058}
   - component: {fileID: 448214057}
   - component: {fileID: 448214059}
+  - component: {fileID: 448214060}
   m_Layer: 0
   m_Name: ChunkManager
   m_TagString: Untagged
@@ -407,21 +408,28 @@ MonoBehaviour:
   enableFullLod: 0
   initialLodFromDistance: 0
   enableFarRangeLod: 0
-  farRangeRadius: 20
+  farRangeRadius: 40
   lodSettings: {fileID: 11400000, guid: 868f81b94f723684ea3dd726391b24e2, type: 2}
-  maxLodTransitionsPerFrame: 40
+  maxLodTransitionsPerFrame: 80
   lodTransitionCooldown: 0.2
   maxSvoBuildsPerFrame: 20
-  enableLodTransitionLog: 1
+  enableLodTransitionLog: 0
   occlusionCuller: {fileID: 448214058}
+  useGpuPipeline: 1
+  voxelGenerationCompute: {fileID: 7200000, guid: a33c9242cca3d7f4594bb598b6dfbf58, type: 3}
+  chunkAnalysisCompute: {fileID: 7200000, guid: d3e2a2a9c9946fb4282007c69646940e, type: 3}
+  chunkCullingCompute: {fileID: 7200000, guid: 0053e47e66c56ad499ad20082a6dbdcb, type: 3}
+  voxelMeshingCompute: {fileID: 7200000, guid: 04709ffb7c7bd7343b32ebd369757d32, type: 3}
+  gpuDrivenRenderer: {fileID: 448214060}
+  gpuMaxChunks: 1024
   svoManager: {fileID: 448214057}
   streamingBudget:
     enabled: 0
     maxMsPerFrame: 3
   chunkLayerName: Terrain
-  srpBatchingConfig: {fileID: 0}
-  voxelMaterial: {fileID: 0}
-  voxelMaterialLibrary: {fileID: 0}
+  srpBatchingConfig: {fileID: 448214059}
+  voxelMaterial: {fileID: 2100000, guid: 9805a1810d2a6b741b09cd565a7136dc, type: 2}
+  voxelMaterialLibrary: {fileID: 11400000, guid: e1c398cf33139d64998e86159899320f, type: 2}
   saveManager: {fileID: 448214051}
   modManager: {fileID: 448214053}
   hybridSave: {fileID: 448214054}
@@ -430,7 +438,7 @@ MonoBehaviour:
   enableDataCache: 1
   maxCachedChunks: 1000
   maxCacheOpsPerFrame: 4
-  enableMeshCache: 0
+  enableMeshCache: 1
   maxMeshCacheEntries: 1000
   meshCacheEvictPerFrame: 4
   enableReverseLod: 0
@@ -544,6 +552,7 @@ MonoBehaviour:
   saveOnUnload: 1
   saveOnDestroy: 1
   compress: 1
+  useRle: 0
   compressionLevel: 1
   saveDensity: 0
   asyncWrite: 1
@@ -608,6 +617,7 @@ MonoBehaviour:
   saveOnUnload: 1
   saveOnDestroy: 1
   compress: 1
+  useRle: 0
   asyncWrite: 1
   useRegionFolders: 1
   regionSize: 32
@@ -628,6 +638,7 @@ MonoBehaviour:
   worldGen: {fileID: 11400000, guid: 182e37385ea739840907a153355f5e7d, type: 2}
   snapshotManager: {fileID: 448214051}
   modManager: {fileID: 448214053}
+  chunkManager: {fileID: 0}
   deltaPromoteThreshold: 0.3
   promoteOnGeneratorVersionChange: 1
   promoteOnSimulatedData: 1
@@ -664,7 +675,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Streaming.ChunkViewConePrioritizer
   enable: 1
-  distanceOnly: 0
+  distanceOnly: 1
   viewTransform: {fileID: 983036173}
   useMainCamera: 1
   ignoreVertical: 1
@@ -708,17 +719,25 @@ MonoBehaviour:
   enableOcclusion: 1
   frustumCulling: 1
   raycastOcclusion: 1
-  maxChecksPerFrame: 256
+  maxChecksPerFrame: 1024
+  recheckOccludedPerFrame: 64
   occluderMask:
     serializedVersion: 2
     m_Bits: 4294967295
   occluderLayerName: Terrain
   raycastPadding: 0.1
+  scalePaddingByBounds: 0
+  paddingScaleFactor: 1
   ignorePreloaded: 1
-  cullPreloaded: 0
+  cullPreloaded: 1
   maxRayDist: 200
   tickBudgetMs: 5
+  useAdaptiveBudget: 0
+  adaptiveTargetMs: 2
+  adaptiveMinChecks: 32
+  adaptiveMaxChecks: 512
   useCoarseSphereCheck: 0
+  useGpu: 0
 --- !u!114 &448214059
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -733,6 +752,23 @@ MonoBehaviour:
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Rendering.SrpBatchingConfig
   voxelMaterial: {fileID: 2100000, guid: 9805a1810d2a6b741b09cd565a7136dc, type: 2}
   voxelMaterialLibrary: {fileID: 11400000, guid: e1c398cf33139d64998e86159899320f, type: 2}
+--- !u!114 &448214060
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 448214046}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: fc00d89385cfea34fa05ea2ccefd46b7, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.GPU.GpuDrivenRenderer
+  instancedMaterial: {fileID: 2100000, guid: 281c2c71e6c4cc54e867d874a1403e80, type: 2}
+  layerName: Default
+  shadowCasting: 0
+  debugLog: 1
+  drawViaRenderFeature: 1
 --- !u!4 &492199355 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 2884546045553303299, guid: 691d201409042b143af4574240386e30, type: 3}

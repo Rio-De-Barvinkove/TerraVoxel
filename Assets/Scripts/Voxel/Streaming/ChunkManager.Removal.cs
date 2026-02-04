@@ -56,11 +56,22 @@ namespace TerraVoxel.Voxel.Streaming
         internal void RemoveChunk(ChunkCoord coord)
         {
             if (!_active.TryGetValue(coord, out var chunk)) return;
+
+            int gpuSlot = -1;
+            if (useGpuPipeline && _gpuWorldState != null)
+                _gpuWorldState.TryGetSlot(coord, out gpuSlot);
+
             _active.Remove(coord);
             _meshedOnce.Remove(coord);
             _preloaded.Remove(coord);
             _preloadSet.Remove(coord);
-            if (hybridSave != null)
+
+            // GPU slot is freed in HandleChunkUnloadedGpu's readback callback (EnqueueSaveFromGpu onReadbackEnqueued), not here.
+            if (gpuSlot >= 0 && hybridSave != null)
+            {
+                hybridSave.HandleChunkUnloadedGpu(coord, gpuSlot);
+            }
+            else if (hybridSave != null)
             {
                 hybridSave.HandleChunkUnloaded(coord, chunk.Data);
             }
@@ -72,8 +83,8 @@ namespace TerraVoxel.Voxel.Streaming
                     modManager.HandleChunkUnloaded(coord);
             }
 
-            // Cache chunk data in RAM before disposing
-            if (enableDataCache && chunk.Data.IsCreated)
+            // Cache chunk data in RAM before disposing (CPU path only)
+            if (gpuSlot < 0 && enableDataCache && chunk.Data.IsCreated)
             {
                 CacheChunkData(coord, chunk.Data);
             }
@@ -95,6 +106,8 @@ namespace TerraVoxel.Voxel.Streaming
                 _pendingMeshJobs.Remove(coord);
             }
 
+            if (gpuSlot >= 0 && chunk.IsGpuRendered)
+                chunk.ClearGpuMeshRef();
             _pool.Return(chunk);
             RebuildNeighbors(coord);
         }

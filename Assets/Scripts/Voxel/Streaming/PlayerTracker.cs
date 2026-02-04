@@ -3,6 +3,7 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
+    /// <summary>Converts world position to chunk coordinate using chunk size and VoxelConstants.VoxelSize.</summary>
     public static class PlayerTracker
     {
         public static ChunkCoord WorldToChunk(Vector3 worldPos, int chunkSize)

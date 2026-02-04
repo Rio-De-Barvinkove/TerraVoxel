@@ -4,7 +4,7 @@ using UnityEngine;
 namespace TerraVoxel.Voxel.Core
 {
     /// <summary>
-    /// Runtime component for a chunk instance (mesh holder).
+    /// Runtime component for a chunk instance (mesh holder). When GPU-rendered (ApplyGpuMeshRef), the renderer is disabled and drawing is done by GpuDrivenRenderer.
     /// </summary>
     [DisallowMultipleComponent]
     [RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
@@ -20,8 +20,10 @@ namespace TerraVoxel.Voxel.Core
         MeshFilter _filter;
         MeshRenderer _renderer;
         MeshCollider _collider;
+        BoxCollider _boxCollider;
         Mesh _mesh;
         bool _usingSharedMesh;
+        bool _gpuRendered;
 
         public void Initialize(ChunkCoord coord)
         {
@@ -55,8 +57,47 @@ namespace TerraVoxel.Voxel.Core
             }
         }
 
+        /// <summary>Mark chunk as rendered by GPU at slot; disables Renderer to avoid double-draw. MeshFilter has no enabled property.</summary>
+        public void ApplyGpuMeshRef(int slot)
+        {
+            Data.GpuSlot = slot;
+            _gpuRendered = true;
+            if (_renderer != null) _renderer.enabled = false;
+        }
+
+        /// <summary>Enable or disable BoxCollider for GPU path (no mesh on chunk; use box per chunk for collision).</summary>
+        public void SetGpuBoxCollider(bool enabled, float chunkWorldSize)
+        {
+            if (enabled && chunkWorldSize > 0.001f)
+            {
+                if (_boxCollider == null) _boxCollider = gameObject.GetComponent<BoxCollider>();
+                if (_boxCollider == null) _boxCollider = gameObject.AddComponent<BoxCollider>();
+                _boxCollider.center = new Vector3(chunkWorldSize * 0.5f, chunkWorldSize * 0.5f, chunkWorldSize * 0.5f);
+                _boxCollider.size = new Vector3(chunkWorldSize, chunkWorldSize, chunkWorldSize);
+                _boxCollider.enabled = true;
+            }
+            else if (_boxCollider != null)
+            {
+                _boxCollider.enabled = false;
+            }
+        }
+
+        /// <summary>Clear GPU ref and re-enable Renderer for CPU rendering. Disables GPU box collider.</summary>
+        public void ClearGpuMeshRef()
+        {
+            SetGpuBoxCollider(false, 0f);
+            _gpuRendered = false;
+            Data.GpuSlot = -1;
+            Data.GpuOffset = -1;
+            var mesh = GetRenderMesh();
+            if (_renderer != null) _renderer.enabled = mesh != null && mesh.vertexCount > 0;
+        }
+
+        public bool IsGpuRendered => _gpuRendered;
+
         public void ApplyMesh(MeshData meshData, bool addCollider = false)
         {
+            if (_gpuRendered) return;
             EnsureLocalMesh();
             if (_mesh == null) return;
             MeshBuilder.Apply(_mesh, meshData);
@@ -137,6 +178,7 @@ namespace TerraVoxel.Voxel.Core
         public void ApplySharedMesh(Mesh sharedMesh, bool addCollider = false)
         {
             if (sharedMesh == null) return;
+            if (_gpuRendered) return;
             if (_filter == null) _filter = gameObject.GetComponent<MeshFilter>();
             _filter.sharedMesh = sharedMesh;
             _usingSharedMesh = true;

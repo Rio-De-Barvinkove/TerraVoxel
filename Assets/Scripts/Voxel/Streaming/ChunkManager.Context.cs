@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
+using TerraVoxel.Voxel.GPU;
 using TerraVoxel.Voxel.Lod;
 using TerraVoxel.Voxel.Meshing;
 using TerraVoxel.Voxel.Occlusion;
@@ -51,6 +52,15 @@ namespace TerraVoxel.Voxel.Streaming
             internal ChunkModManager ModManager => _owner.modManager;
             internal ChunkHybridSaveManager HybridSave => _owner.hybridSave;
             internal ChunkPhysicsOptimizer PhysicsOptimizer => _owner.physicsOptimizer;
+
+            internal bool UseGpuPipeline => _owner.useGpuPipeline;
+            internal int GpuMaxChunks => _owner.gpuMaxChunks;
+            internal GpuWorldState GpuWorldState => _owner._gpuWorldState;
+            internal GpuChunkGenerator GpuChunkGenerator => _owner._gpuChunkGenerator;
+            internal GpuMesher GpuMesher => _owner._gpuMesher;
+            internal GpuCuller GpuCuller => _owner._gpuCuller;
+            internal GpuReadbackManager GpuReadbackManager => _owner._gpuReadbackManager;
+            internal uint GetGpuChunkFlags(int slot) => _owner._gpuSlotFlags != null && _owner._gpuSlotFlags.TryGetValue(slot, out var f) ? f : 0;
 
             internal int LoadRadius { get => _owner.loadRadius; set => _owner.loadRadius = value; }
             internal int UnloadRadius { get => _owner.unloadRadius; set => _owner.unloadRadius = value; }

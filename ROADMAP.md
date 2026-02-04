@@ -97,6 +97,20 @@
 - [X] **Pending membership:** _pendingSet.Add перед EnqueueWithPriority у MaintainRadius/RebuildPendingQueue; TryDequeuePending при DistanceOnly використовує TryFindClosestPending.
 - [X] **Модуляризація ChunkManager:** розбиття на модулі (ChunkLoader, ChunkJobsManager, ChunkIntegrationManager, ChunkLodManager, **ChunkCacheManager** — менеджер кешу, **ChunkManager.Neighbors** — partial, логіка сусідів без окремого класу, ChunkAdaptiveLimitsManager, ChunkWorkDropManager, ChunkSafeSpawnManager, ChunkPhysicsManager) та shared Context; ChunkManager залишається фасадом з fallback-реалізаціями.
 
+### GPU-Driven Voxel Engine (Phases 0–9)
+- [X] **Phase 0:** GpuWorldState, GpuSlotAllocator, GpuChunkDescriptor — буфери, fixed slots, free-list, generation id.
+- [X] **Phase 1:** GpuChunkGenerator + VoxelGeneration.compute; ChunkGenerator Facade (CPU fallback тільки `#if UNITY_EDITOR && ALLOW_CPU_FALLBACK`).
+- [X] **Phase 2:** GpuChunkAnalyzer + ChunkAnalysis.compute (ClearCounts, AnalyzeChunkCount, AnalyzeChunkFlags, DownsampleLOD); flags empty/solid/mixed.
+- [X] **Phase 3:** GpuCuller + ChunkCulling.compute (FrustumCull, OcclusionCull, BuildDrawCommands); ChunkOcclusionCuller Facade.
+- [X] **Phase 4:** GpuMesher + VoxelMeshing.compute (face extraction, не greedy); мешинг тільки visible chunks; GreedyMesher Facade.
+- [X] **Phase 5:** GpuDrivenRenderer + VoxelTriplanarURP_Instanced.shader + DrawProceduralIndirect.
+- [X] **Phase 6:** GpuReadbackManager; ChunkSaveManager/ChunkModManager/ChunkHybridSaveManager Facade (readback → serialize, load → upload).
+- [X] **Phase 7:** ChunkManager full integration (SpawnChunkGpu, cache/snapshot load → GPU upload, ApplyModsToGpu, slot limit); CPU fallback вимкнено в release.
+- [X] **Phase 8:** GpuErosionSimulator + Erosion.compute (опційно).
+- [X] **Phase 9:** SVO GPU — відкладено (research-level, post-MVP).
+- [X] **Slot generation check:** у compute shaders (ChunkAnalysis, ChunkCulling) перевірка `slotGeneration` vs ExpectedGeneration для use-after-free.
+- [X] **ChunkAnalysis full coverage:** ClearCounts → AnalyzeChunkCount (atomics) → AnalyzeChunkFlags; повний обʼєм чанка.
+
 ---
 
 ## Чеклист оптимізацій (загальний, не всі реалізовані)
@@ -111,8 +125,7 @@
 18. Mesh Simplification для дальніх LOD
 
 
-45. Compression (RLE) - реалізовано (RleCompression.cs, useRle в ChunkSaveBinary/ChunkModBinary).
-35. Indirect Draw Calls
+35. Indirect Draw Calls — **[X] реалізовано (GpuDrivenRenderer, DrawProceduralIndirect)**
 50. Paging чанків
 72. Density Field Thresholding
 87. System Ordering Optimization
@@ -124,12 +137,12 @@
 98. Precomputed Neighbor Masks
 
 
-20. GPU Instancing
-31. Compute Shaders для генерації 
-32. GPU Meshing
-33. GPU Culling
-34. GPU-driven Rendering
-36. Async GPU Readback Control
+20. GPU Instancing — **[X] реалізовано (GpuDrivenRenderer, instanced shader)**
+31. Compute Shaders для генерації — **[X] реалізовано (VoxelGeneration.compute, GpuChunkGenerator)**
+32. GPU Meshing — **[X] реалізовано (VoxelMeshing.compute, GpuMesher)**
+33. GPU Culling — **[X] реалізовано (ChunkCulling.compute, GpuCuller)**
+34. GPU-driven Rendering — **[X] реалізовано (GpuDrivenRenderer, indirect draw)**
+36. Async GPU Readback Control — **[X] реалізовано (GpuReadbackManager, Save/Mod facade)**
 
 22. Static Batching - шось треба глянуть
 26. Virtual Texturing - будуще

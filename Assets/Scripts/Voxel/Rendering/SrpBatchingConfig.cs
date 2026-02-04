@@ -4,9 +4,11 @@ using UnityEngine;
 namespace TerraVoxel.Voxel.Rendering
 {
     /// <summary>
-    /// SRP Batcher compatibility config: shared material + texture array for all voxel chunks.
+    /// SRP Batcher compatibility config: shared material and texture array for CPU-rendered voxel chunks.
     /// Attach to same GameObject as ChunkManager; assign to ChunkManager.srpBatchingConfig.
-    /// Ensures single shader, no MaterialPropertyBlock, Texture2DArray - required for SRP Batching.
+    /// Used only for mesh-on-Chunk CPU render; when useGpuPipeline is true, main drawing is done by
+    /// GpuDrivenRenderer with its own instanced material. Ensures single shader, no MaterialPropertyBlock,
+    /// Texture2DArray - required for SRP Batching.
     /// </summary>
     public class SrpBatchingConfig : MonoBehaviour
     {
@@ -17,7 +19,7 @@ namespace TerraVoxel.Voxel.Rendering
 
         bool _configured;
 
-        /// <summary>Configure material once at startup. Call from ChunkManager.Awake.</summary>
+        /// <summary>Configure material once at startup. Called from ChunkManager during Awake (before any SpawnChunk).</summary>
         public void Configure()
         {
             if (_configured || voxelMaterial == null || voxelMaterialLibrary == null) return;

@@ -6,6 +6,7 @@ using System.IO.Compression;
 using System.Threading;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
+using TerraVoxel.Voxel.GPU;
 using Unity.Collections;
 using UnityEngine;
 using IoCompressionLevel = System.IO.Compression.CompressionLevel;
@@ -89,6 +90,46 @@ namespace TerraVoxel.Voxel.Save
             int generatorVersion = worldGen != null ? worldGen.GeneratorVersion : 0;
             var meta = ChunkMeta.Default(ChunkSaveMode.SnapshotBacked, generatorVersion);
             EnqueueSave(coord, data, meta);
+        }
+
+        /// <summary>Enqueue save from GPU slot (readback then serialize). Call when chunk is on GPU. onReadbackEnqueued is invoked only after async readback completes and data is enqueued—use it to FreeChunk(coord) so the slot is not freed or reallocated before data is captured.</summary>
+        public void EnqueueSaveFromGpu(ChunkCoord coord, int slot, GpuWorldState state, GpuReadbackManager readback, System.Action onReadbackEnqueued = null)
+        {
+            if (!_accepting || state == null || readback == null) return;
+            readback.RequestChunkVoxels(state, slot, (materials) =>
+            {
+                if (materials == null || materials.Length == 0)
+                {
+                    onReadbackEnqueued?.Invoke();
+                    return;
+                }
+                int generatorVersion = worldGen != null ? worldGen.GeneratorVersion : 0;
+                var meta = ChunkMeta.Default(ChunkSaveMode.SnapshotBacked, generatorVersion);
+                var payload = new ChunkSaveBinary.Payload
+                {
+                    Coord = coord,
+                    ChunkSize = state.ChunkSize,
+                    Materials = materials,
+                    DensityBytes = null,
+                    Meta = meta
+                };
+                var request = new ChunkSaveRequest
+                {
+                    Path = GetChunkPath(coord),
+                    Payload = payload,
+                    Compress = compress,
+                    UseRle = useRle,
+                    CompressionLevel = compressionLevel
+                };
+                if (asyncWrite)
+                {
+                    _queue.Enqueue(request);
+                    _signal?.Set();
+                }
+                else
+                    WriteRequest(request);
+                onReadbackEnqueued?.Invoke();
+            });
         }
 
         public void EnqueueSave(ChunkCoord coord, ChunkData data, ChunkMeta meta)

@@ -46,6 +46,7 @@ namespace TerraVoxel.Voxel.Streaming
         /// <summary>Completes finished gen jobs on main thread; applies safe spawn, delta, schedules mesh. Exceptions in Complete() or subsequent logic are not caught.</summary>
         internal void ProcessGenJobs()
         {
+            if (useGpuPipeline) return;
             if (_genJobs.Count == 0) return;
             _genCompleted.Clear();
             foreach (var kvp in _genJobs)
@@ -182,6 +183,7 @@ namespace TerraVoxel.Voxel.Streaming
         /// <summary>Completes finished mesh jobs on main thread; queues integration. Exceptions in Complete() or subsequent logic are not caught.</summary>
         internal void ProcessMeshJobs()
         {
+            if (useGpuPipeline) return;
             if (_meshJobs.Count == 0) return;
             _meshCompleted.Clear();
             foreach (var kvp in _meshJobs)
@@ -264,6 +266,7 @@ namespace TerraVoxel.Voxel.Streaming
 
         internal void ScheduleGenJob(ChunkCoord coord, Chunk chunk, double spawnStart, bool applySafeSpawn, bool applyDelta)
         {
+            if (useGpuPipeline) return;
             if (_genJobs.ContainsKey(coord)) return;
             if (_generator == null || worldGen == null) return;
             if (chunk == null || !chunk.Data.IsCreated) return;
@@ -299,6 +302,7 @@ namespace TerraVoxel.Voxel.Streaming
 
         internal bool ScheduleMeshForChunk(ChunkCoord coord, double spawnStart, int lodStep = 1)
         {
+            if (useGpuPipeline) return false;
             if (!_active.TryGetValue(coord, out var chunk)) return false;
             if (!chunk.Data.IsCreated) return false;
             if (IsChunkGenerating(coord)) return false;

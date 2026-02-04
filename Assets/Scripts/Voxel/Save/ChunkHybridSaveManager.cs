@@ -1,6 +1,8 @@
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
+using TerraVoxel.Voxel.GPU;
+using TerraVoxel.Voxel.Streaming;
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.Save
@@ -10,6 +12,7 @@ namespace TerraVoxel.Voxel.Save
         [SerializeField] WorldGenConfig worldGen;
         [SerializeField] ChunkSaveManager snapshotManager;
         [SerializeField] ChunkModManager modManager;
+        [SerializeField] ChunkManager chunkManager;
         [SerializeField] float deltaPromoteThreshold = 0.3f;
         [SerializeField] bool promoteOnGeneratorVersionChange = true;
         [SerializeField] bool promoteOnSimulatedData = true;
@@ -23,6 +26,19 @@ namespace TerraVoxel.Voxel.Save
         {
             if (snapshotManager == null) snapshotManager = GetComponent<ChunkSaveManager>();
             if (modManager == null) modManager = GetComponent<ChunkModManager>();
+            if (chunkManager == null) chunkManager = GetComponent<ChunkManager>();
+        }
+
+        /// <summary>GPU path: enqueue save from GPU readback then free slot in callback.</summary>
+        public void HandleChunkUnloadedGpu(ChunkCoord coord, int slot)
+        {
+            if (snapshotManager == null || chunkManager == null || !chunkManager.UseGpuPipeline) return;
+            var state = chunkManager.GpuWorldState;
+            var readback = chunkManager.GpuReadbackManager;
+            if (state == null || readback == null) return;
+            snapshotManager.EnqueueSaveFromGpu(coord, slot, state, readback, () => state.FreeChunk(coord));
+            if (modManager != null)
+                modManager.HandleChunkUnloaded(coord);
         }
 
         public bool TryLoadSnapshot(ChunkCoord coord, ChunkData data)

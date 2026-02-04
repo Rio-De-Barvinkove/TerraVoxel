@@ -3,6 +3,7 @@ using TerraVoxel.Voxel.Core;
 
 namespace TerraVoxel.Voxel.Streaming
 {
+    /// <summary>Delegates collider enable/disable and Tick to PhysicsOptimizer when set.</summary>
     internal sealed class ChunkPhysicsManager
     {
         readonly ChunkManager.Context _ctx;

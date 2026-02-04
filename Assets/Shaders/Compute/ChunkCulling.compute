@@ -1,0 +1,170 @@
+// ChunkCulling.compute - GPU frustum culling and build draw commands
+struct CullChunkDesc
+{
+    int3 coord;
+    uint slotGeneration;
+    uint voxelOffset;
+    uint meshOffset;
+    uint vertexCount;
+    uint flags;
+};
+
+#define CHUNK_FLAG_EMPTY 1
+
+StructuredBuffer<CullChunkDesc> CullingChunkBuf;
+StructuredBuffer<uint> ExpectedGeneration;
+RWStructuredBuffer<uint> VisibilityFlags;
+RWStructuredBuffer<float4x4> VisibleInstanceMatrices;
+RWStructuredBuffer<uint> DrawArgs;
+RWStructuredBuffer<uint> VisibleChunkIndices;
+RWStructuredBuffer<uint> VisibleCount;
+
+float4 FrustumPlanes[6];
+float4x4 ViewProjection;
+float3 CameraPosition_;
+uint ChunkCount_;
+uint ChunkSize_;
+float ChunkWorldSize_;
+uint MaxVerticesPerInstance_;
+
+#pragma kernel FrustumCull
+#pragma kernel OcclusionCull
+#pragma kernel BuildDrawCommands
+#pragma kernel WriteDrawArgs
+#pragma kernel GenerateHiZ
+
+// Frustum test: AABB vs 6 planes
+bool AABBInFrustum(float3 center, float3 extent)
+{
+    for (int i = 0; i < 6; i++)
+    {
+        float4 plane = FrustumPlanes[i];
+        float3 absNormal = abs(plane.xyz);
+        float r = dot(extent, absNormal);
+        float d = dot(center, plane.xyz) + plane.w;
+        if (d < -r)
+            return false;
+    }
+    return true;
+}
+
+[numthreads(64, 1, 1)]
+void FrustumCull(uint id : SV_DispatchThreadID)
+{
+    if (id >= ChunkCount_)
+    {
+        if (id == 0)
+            VisibilityFlags[0] = 0;
+        return;
+    }
+
+    CullChunkDesc desc = CullingChunkBuf[id];
+    if (ExpectedGeneration[id] != desc.slotGeneration)
+    {
+        VisibilityFlags[id] = 0;
+        return;
+    }
+    if ((desc.flags & CHUNK_FLAG_EMPTY) != 0)
+    {
+        VisibilityFlags[id] = 0;
+        return;
+    }
+    if (desc.vertexCount == 0 || desc.meshOffset == 0xFFFFFFFF)
+    {
+        VisibilityFlags[id] = 0;
+        return;
+    }
+
+    float3 center = float3(desc.coord) * ChunkWorldSize_ + ChunkWorldSize_ * 0.5;
+    float3 extent = float3(ChunkWorldSize_, ChunkWorldSize_, ChunkWorldSize_) * 0.5;
+
+    bool visible = AABBInFrustum(center, extent);
+    VisibilityFlags[id] = visible ? 1u : 0u;
+}
+
+Texture2D<float> HiZBuffer_;
+SamplerState sampler_HiZBuffer_;
+float OcclusionBias_;
+
+[numthreads(64, 1, 1)]
+void OcclusionCull(uint id : SV_DispatchThreadID)
+{
+    if (id >= ChunkCount_)
+        return;
+    if (VisibilityFlags[id] == 0)
+        return;
+    CullChunkDesc desc = CullingChunkBuf[id];
+    if (ExpectedGeneration[id] != desc.slotGeneration)
+        return;
+    float3 center = float3(desc.coord) * ChunkWorldSize_ + ChunkWorldSize_ * 0.5;
+    float4 clip = mul(ViewProjection, float4(center, 1));
+    float2 ndc = clip.xy / clip.w;
+    float2 uv = ndc * 0.5 + 0.5;
+    if (uv.x < 0 || uv.x > 1 || uv.y < 0 || uv.y > 1)
+        return;
+    float depth = clip.z / clip.w;
+    float occluderDepth = HiZBuffer_.SampleLevel(sampler_HiZBuffer_, uv, 0);
+    if (depth > occluderDepth + OcclusionBias_)
+        VisibilityFlags[id] = 0;
+}
+
+[numthreads(64, 1, 1)]
+void BuildDrawCommands(uint id : SV_DispatchThreadID)
+{
+    if (id == 0)
+        VisibleCount[0] = 0;
+    GroupMemoryBarrierWithGroupSync();
+
+    if (id >= ChunkCount_)
+        return;
+    if (VisibilityFlags[id] == 0)
+        return;
+
+    CullChunkDesc desc = CullingChunkBuf[id];
+    if (ExpectedGeneration[id] != desc.slotGeneration)
+        return;
+    if (desc.vertexCount == 0)
+        return;
+
+    uint visibleIdx;
+    InterlockedAdd(VisibleCount[0], 1, visibleIdx);
+
+    VisibleChunkIndices[visibleIdx] = id;
+    float3 worldPos = float3(desc.coord) * ChunkWorldSize_;
+    float scale = ChunkSize_ > 0 ? (ChunkWorldSize_ / (float)ChunkSize_) : 1.0;
+    VisibleInstanceMatrices[visibleIdx] = float4x4(
+        scale, 0, 0, 0,
+        0, scale, 0, 0,
+        0, 0, scale, 0,
+        worldPos.x, worldPos.y, worldPos.z, 1
+    );
+}
+
+[numthreads(1, 1, 1)]
+void WriteDrawArgs(uint id : SV_DispatchThreadID)
+{
+    uint visible = VisibleCount[0];
+    if (visible > ChunkCount_)
+        visible = ChunkCount_;
+    DrawArgs[0] = MaxVerticesPerInstance_;
+    DrawArgs[1] = visible;
+    DrawArgs[2] = 0;
+    DrawArgs[3] = 0;
+}
+
+Texture2D<float> DepthBuffer_;
+RWTexture2D<float> HiZMip0_;
+uint2 HiZSize_;
+
+[numthreads(8, 8, 1)]
+void GenerateHiZ(uint2 id : SV_DispatchThreadID)
+{
+    if (any(id >= HiZSize_))
+        return;
+    uint2 src = id * 2;
+    float d0 = DepthBuffer_[src];
+    float d1 = DepthBuffer_[min(src + uint2(1, 0), HiZSize_ * 2 - 1)];
+    float d2 = DepthBuffer_[min(src + uint2(0, 1), HiZSize_ * 2 - 1)];
+    float d3 = DepthBuffer_[min(src + uint2(1, 1), HiZSize_ * 2 - 1)];
+    HiZMip0_[id] = max(max(d0, d1), max(d2, d3));
+}

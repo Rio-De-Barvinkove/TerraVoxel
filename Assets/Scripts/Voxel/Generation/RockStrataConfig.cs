@@ -13,7 +13,7 @@ namespace TerraVoxel.Voxel.Generation
     }
 
     /// <summary>
-    /// Placeholder for layer thickness tables.
+    /// Placeholder for rock layer thickness tables (Provinces). Used for strata-based generation when wired.
     /// </summary>
     [CreateAssetMenu(menuName = "TerraVoxel/Rock Strata Config", fileName = "RockStrataConfig")]
     public class RockStrataConfig : ScriptableObject

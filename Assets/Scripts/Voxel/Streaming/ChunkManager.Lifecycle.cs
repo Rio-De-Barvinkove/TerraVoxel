@@ -8,6 +8,15 @@ namespace TerraVoxel.Voxel.Streaming
     {
         internal void MaintainRadius()
         {
+            if (worldGen.ColumnChunks < 1)
+            {
+                if (!_warnedColumnChunksZero)
+                {
+                    _warnedColumnChunksZero = true;
+                    Debug.LogWarning("[ChunkManager] WorldGen.ColumnChunks is < 1. No chunk coords will be added. Set ColumnChunks >= 1 in WorldGenConfig.");
+                }
+                return;
+            }
             ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
             MaybeDropWork(center);
             if (ShouldRebuildPending(center))
@@ -122,13 +131,23 @@ namespace TerraVoxel.Voxel.Streaming
             while (PendingCount > 0 && spawned < maxSpawnsPerFrame)
             {
                 if (BudgetExceeded()) break;
-                if (_genJobs.Count >= CurrentMaxGenJobsInFlight) break;
+                if (useGpuPipeline && _gpuWorldState != null)
+                {
+                    if (_gpuWorldState.ChunkCount >= gpuMaxChunks) break;
+                }
+                else if (_genJobs.Count >= CurrentMaxGenJobsInFlight)
+                    break;
                 if (!TryDequeuePending(center, out var coord))
                     break;
                 if (!IsWithinLoadRadius(coord, center, loadRadius)) continue;
                 if (_active.ContainsKey(coord)) continue;
                 if (viewCone != null && viewCone.Enabled && workDropAngleDeg > 0f && !viewCone.IsInViewCone(coord, center, player))
+                {
+                    _pendingSet.Add(coord);
+                    if (viewCone != null && viewCone.Enabled)
+                        viewCone.EnqueueWithPriority(coord, center, player);
                     continue;
+                }
                 SpawnChunk(coord);
                 spawned++;
             }
@@ -149,7 +168,12 @@ namespace TerraVoxel.Voxel.Streaming
             while (_preload.Count > 0 && spawned < CurrentMaxPreloadsPerFrame)
             {
                 if (BudgetExceeded()) break;
-                if (_genJobs.Count >= CurrentMaxGenJobsInFlight) break;
+                if (useGpuPipeline && _gpuWorldState != null)
+                {
+                    if (_gpuWorldState.ChunkCount >= gpuMaxChunks) break;
+                }
+                else if (_genJobs.Count >= CurrentMaxGenJobsInFlight)
+                    break;
                 var coord = _preload.Dequeue();
                 _preloadSet.Remove(coord);
 

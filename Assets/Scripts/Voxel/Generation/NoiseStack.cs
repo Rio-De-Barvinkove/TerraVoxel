@@ -22,7 +22,7 @@ namespace TerraVoxel.Voxel.Generation
     }
 
     /// <summary>
-    /// Scriptable noise stack description.
+    /// Scriptable noise stack description. Layers may be null or empty; callers null-check before use.
     /// </summary>
     [CreateAssetMenu(menuName = "TerraVoxel/Noise Stack", fileName = "NoiseStack")]
     public class NoiseStack : ScriptableObject

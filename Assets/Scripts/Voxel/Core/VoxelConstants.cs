@@ -3,7 +3,7 @@ using UnityEngine;
 namespace TerraVoxel.Voxel.Core
 {
     /// <summary>
-    /// Global voxel constants for chunk sizing and world scale.
+    /// Default voxel constants for chunk sizing and world scale. WorldGenConfig may override ChunkSize per world.
     /// </summary>
     public static class VoxelConstants
     {

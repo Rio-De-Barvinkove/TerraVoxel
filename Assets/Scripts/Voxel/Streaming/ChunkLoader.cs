@@ -4,6 +4,7 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
+    /// <summary>Delegates radius maintenance and pending/preload spawn to ChunkManager. When UseGpuPipeline, respects GpuWorldState.ChunkCount vs GpuMaxChunks.</summary>
     internal sealed class ChunkLoader
     {
         readonly ChunkManager.Context _ctx;
@@ -31,14 +32,19 @@ namespace TerraVoxel.Voxel.Streaming
             while (_ctx.Owner.PendingCount > 0 && spawned < maxSpawnsPerFrame)
             {
                 if (_ctx.BudgetExceeded()) break;
-                if (_ctx.GenJobs.Count >= _ctx.CurrentMaxGenJobsInFlight) break;
+                if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuMaxChunks) break;
+                if (!_ctx.UseGpuPipeline && _ctx.GenJobs.Count >= _ctx.CurrentMaxGenJobsInFlight) break;
                 if (!TryDequeuePending(center, out var coord))
                     break;
                 if (IsWithinLoadRadius(coord, center, loadRadius) == false) continue;
                 if (_ctx.Active.ContainsKey(coord)) continue;
-                // Work dropping: skip spawning out-of-view-cone chunks (they get re-queued by MaintainRadius)
                 if (viewCone != null && viewCone.Enabled && _ctx.WorkDropAngleDeg > 0f && !viewCone.IsInViewCone(coord, center, player))
+                {
+                    _ctx.PendingSet.Add(coord);
+                    if (viewCone != null && viewCone.Enabled)
+                        viewCone.EnqueueWithPriority(coord, center, player);
                     continue;
+                }
                 SpawnChunk(coord);
                 spawned++;
             }
@@ -59,7 +65,8 @@ namespace TerraVoxel.Voxel.Streaming
             while (_ctx.Preload.Count > 0 && spawned < _ctx.CurrentMaxPreloadsPerFrame)
             {
                 if (_ctx.BudgetExceeded()) break;
-                if (_ctx.GenJobs.Count >= _ctx.CurrentMaxGenJobsInFlight) break;
+                if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuMaxChunks) break;
+                if (!_ctx.UseGpuPipeline && _ctx.GenJobs.Count >= _ctx.CurrentMaxGenJobsInFlight) break;
                 var coord = _ctx.Preload.Dequeue();
                 _ctx.PreloadSet.Remove(coord);
 

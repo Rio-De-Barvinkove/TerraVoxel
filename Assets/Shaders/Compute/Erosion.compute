@@ -1,0 +1,14 @@
+// Erosion.compute - Optional GPU erosion (Phase 9). Placeholder; expand with SimulateWaterFlow, SimulateSediment, CommitChanges.
+#pragma kernel CommitChanges
+
+RWStructuredBuffer<uint> VoxelMaterialBuffer;
+uint VoxelOffset_;
+uint ChunkSize_;
+
+[numthreads(8, 8, 8)]
+void CommitChanges(uint3 id : SV_DispatchThreadID)
+{
+    if (any(id >= ChunkSize_))
+        return;
+    // Placeholder: no-op. Add water/sediment simulation and delta application when implementing full erosion.
+}

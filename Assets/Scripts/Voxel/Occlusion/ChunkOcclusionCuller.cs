@@ -1,13 +1,15 @@
 using System;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
+using TerraVoxel.Voxel.GPU;
 using TerraVoxel.Voxel.Streaming;
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.Occlusion
 {
     /// <summary>
-    /// Occlusion culling for chunk renderers: frustum and optional raycast.
+    /// Occlusion culling for chunk renderers: frustum and optional raycast (CPU path only).
+    /// When useGpu is set (GPU pipeline), Tick returns early and does not run culling—ChunkManager calls GpuCuller.Cull once per frame.
     /// Optional adaptive limits (useAdaptiveBudget): effectiveMaxChecks is adjusted each frame from previous Tick duration vs adaptiveTargetMs.
     /// Optional dynamic raycast padding (scalePaddingByBounds): padding scales from bounds.size and is clamped to avoid zero or excessive values.
     /// Raycast occlusion is applied only to full-detail mesh chunks (!UsesSvo &amp;&amp; LodStep &lt;= 1); LOD/SVO chunks are skipped for consistent bounds and performance.
@@ -51,6 +53,20 @@ namespace TerraVoxel.Voxel.Occlusion
         [SerializeField] int adaptiveMaxChecks = 512;
         [Tooltip("If true, skip raycasts when no occluder in chunk bounds sphere (reduces raycasts when chunk is clearly visible).")]
         [SerializeField] bool useCoarseSphereCheck = false;
+        [Tooltip("When true and GpuPipeline set, delegate culling to GpuCuller (frustum on GPU); CPU raycast skipped.")]
+        [SerializeField] bool useGpu = false;
+
+        GpuWorldState _gpuWorldState;
+        GpuCuller _gpuCuller;
+
+        /// <summary>Set for GPU path. When useGpu is true, Tick returns early; ChunkManager calls GpuCuller.Cull once per frame. Enables useGpu when ChunkManager has UseGpuPipeline.</summary>
+        public void SetGpuPipeline(GpuWorldState worldState, GpuCuller culler, bool enableGpu = true)
+        {
+            _gpuWorldState = worldState;
+            _gpuCuller = culler;
+            if (worldState != null && culler != null && enableGpu)
+                useGpu = true;
+        }
 
         struct Candidate
         {
@@ -103,6 +119,10 @@ namespace TerraVoxel.Voxel.Occlusion
 
             Camera cam = Camera.main;
             if (cam == null) return;
+
+            // GPU culling is done once per frame by ChunkManager.Update; do not call Cull here to avoid double Cull.
+            if (useGpu && _gpuCuller != null && _gpuWorldState != null)
+                return;
 
             Plane[] planes = frustumCulling ? GeometryUtility.CalculateFrustumPlanes(cam) : null;
             Vector3 camPos = cam.transform.position;

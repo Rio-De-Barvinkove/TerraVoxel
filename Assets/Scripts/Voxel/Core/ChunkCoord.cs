@@ -3,7 +3,7 @@ using System;
 namespace TerraVoxel.Voxel.Core
 {
     /// <summary>
-    /// Integer chunk coordinate (x,z) with vertical layer index.
+    /// 3D integer chunk coordinate (X, Y, Z).
     /// </summary>
     [Serializable]
     public struct ChunkCoord : IEquatable<ChunkCoord>

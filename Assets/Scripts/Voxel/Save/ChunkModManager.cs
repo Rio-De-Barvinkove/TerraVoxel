@@ -5,6 +5,7 @@ using System.IO;
 using System.Threading;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
+using TerraVoxel.Voxel.GPU;
 using TerraVoxel.Voxel.Streaming;
 using UnityEngine;
 
@@ -171,6 +172,9 @@ namespace TerraVoxel.Voxel.Save
                         chunk.Data.Materials[index] = material;
                 }
 
+                if (chunkManager != null && chunkManager.UseGpuPipeline && chunkManager.GpuWorldState != null && chunkManager.GpuWorldState.TryGetSlot(coord, out int gpuSlot))
+                    chunkManager.GpuWorldState.SetVoxel(gpuSlot, index, material);
+
                 touched.Add(coord);
             }
 
@@ -229,6 +233,32 @@ namespace TerraVoxel.Voxel.Save
                     chunk.Data.Materials[index] = material;
                 chunkManager.RequestRemesh(coord, includeNeighbors: true);
             }
+
+            if (chunkManager != null && chunkManager.UseGpuPipeline && chunkManager.GpuWorldState != null && chunkManager.GpuWorldState.TryGetSlot(coord, out int gpuSlot))
+                chunkManager.GpuWorldState.SetVoxel(gpuSlot, index, material);
+        }
+
+        /// <summary>Apply stored mods for coord to GPU slot (after generation).</summary>
+        public void ApplyModsToGpu(ChunkCoord coord, int slot, GpuWorldState state)
+        {
+            if (state == null || !_mods.TryGetValue(coord, out var dict) || dict.Count == 0) return;
+            int chunkSize = GetChunkSize();
+            foreach (var kvp in dict)
+            {
+                if (kvp.Key >= 0 && kvp.Key < chunkSize * chunkSize * chunkSize)
+                    state.SetVoxel(slot, kvp.Key, kvp.Value);
+            }
+        }
+
+        /// <summary>Get mod voxel for debug (e.g. VoxelModDebugInput). Returns true if coord has mods and local index is in dict.</summary>
+        public bool TryGetModVoxel(ChunkCoord coord, int lx, int ly, int lz, out ushort material)
+        {
+            material = 0;
+            int chunkSize = GetChunkSize();
+            if (lx < 0 || ly < 0 || lz < 0 || lx >= chunkSize || ly >= chunkSize || lz >= chunkSize) return false;
+            int index = lx + chunkSize * (ly + chunkSize * lz);
+            if (!_mods.TryGetValue(coord, out var dict) || !dict.TryGetValue(index, out material)) return false;
+            return true;
         }
 
         void EnsureLoaded(ChunkCoord coord, bool force)

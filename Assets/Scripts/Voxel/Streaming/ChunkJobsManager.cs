@@ -3,6 +3,7 @@ using TerraVoxel.Voxel.Meshing;
 
 namespace TerraVoxel.Voxel.Streaming
 {
+    /// <summary>Delegates gen/mesh/face job processing and scheduling to ChunkManager. When UseGpuPipeline, ProcessGenJobs is a no-op on Owner.</summary>
     internal sealed class ChunkJobsManager
     {
         readonly ChunkManager.Context _ctx;

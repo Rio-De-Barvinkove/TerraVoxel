@@ -488,6 +488,9 @@ namespace TerraVoxel.Voxel.Save
             if (lx < 0 || ly < 0 || lz < 0 || lx >= chunkSize || ly >= chunkSize || lz >= chunkSize)
                 return false;
 
+            if (chunkManager.UseGpuPipeline && modManager != null && modManager.TryGetModVoxel(coord, lx, ly, lz, out material))
+                return true;
+
             if (!chunkManager.TryGetChunk(coord, out var chunk) || chunk == null || !chunk.Data.IsCreated)
                 return false;
 

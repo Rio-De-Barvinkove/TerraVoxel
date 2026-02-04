@@ -6,6 +6,7 @@ using Unity.Jobs;
 
 namespace TerraVoxel.Voxel.Streaming
 {
+    /// <summary>Job handle and noise layers for chunk generation; caller must Dispose.</summary>
     public struct ChunkGenJobHandle : IDisposable
     {
         public JobHandle Handle;
@@ -17,15 +18,16 @@ namespace TerraVoxel.Voxel.Streaming
         }
     }
 
+    /// <summary>Neighbor voxel buffers for mesh jobs; caller must Dispose.</summary>
     public struct NeighborDataBuffers : IDisposable
     {
         public GreedyMesher.NeighborData Data;
-            public NativeArray<ushort> NegX;
-            public NativeArray<ushort> PosX;
-            public NativeArray<ushort> NegY;
-            public NativeArray<ushort> PosY;
-            public NativeArray<ushort> NegZ;
-            public NativeArray<ushort> PosZ;
+        public NativeArray<ushort> NegX;
+        public NativeArray<ushort> PosX;
+        public NativeArray<ushort> NegY;
+        public NativeArray<ushort> PosY;
+        public NativeArray<ushort> NegZ;
+        public NativeArray<ushort> PosZ;
 
         public void Dispose()
         {
@@ -38,6 +40,7 @@ namespace TerraVoxel.Voxel.Streaming
         }
     }
 
+    /// <summary>Job handle and buffers for full-chunk mesh job; caller must Dispose.</summary>
     public struct ChunkMeshJobHandle : IDisposable
     {
         public JobHandle Handle;

@@ -7,6 +7,7 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
+    /// <summary>Data and mesh cache for chunks; hash/register/release/evict. Used when EnableDataCache/EnableMeshCache; GPU path uses GpuWorldState for mesh.</summary>
     internal sealed class ChunkCacheManager
     {
         readonly ChunkManager.Context _ctx;

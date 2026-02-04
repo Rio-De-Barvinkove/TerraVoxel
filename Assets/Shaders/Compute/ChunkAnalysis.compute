@@ -1,0 +1,120 @@
+// ChunkAnalysis.compute - GPU chunk analysis (empty/solid/mixed flags) + LOD downsample
+#pragma kernel ClearCounts
+#pragma kernel AnalyzeChunkCount
+#pragma kernel AnalyzeChunkFlags
+#pragma kernel DownsampleLOD
+
+struct ChunkDescriptor
+{
+    int3 coord;
+    uint slotGeneration;
+    uint voxelOffset;
+    uint meshOffset;
+    uint vertexCount;
+    uint flags;
+};
+
+#define CHUNK_FLAG_EMPTY 1
+#define CHUNK_FLAG_SOLID 2
+#define CHUNK_FLAG_MIXED 4
+
+StructuredBuffer<uint> VoxelMaterialBuffer;
+RWStructuredBuffer<ChunkDescriptor> ChunkDescriptors;
+RWStructuredBuffer<uint> LodVoxelBuffer;
+StructuredBuffer<uint> ExpectedGeneration;
+RWStructuredBuffer<uint> SolidCount;
+RWStructuredBuffer<uint> AirCount;
+uint ChunkSize_;
+uint VoxelsPerChunk_;
+uint ChunkCount_;
+uint ChunkIndex_;
+uint LodLevel_;
+uint VoxelStart_;
+
+// Clear SolidCount and AirCount before counting (one thread per chunk).
+[numthreads(64, 1, 1)]
+void ClearCounts(uint id : SV_DispatchThreadID)
+{
+    if (id >= ChunkCount_)
+        return;
+    SolidCount[id] = 0;
+    AirCount[id] = 0;
+}
+
+// Count all voxels per chunk using global atomics. Full chunk coverage: one thread per voxel.
+#define THREADS_PER_GROUP 512
+[numthreads(8, 8, 8)]
+void AnalyzeChunkCount(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex, uint3 groupId : SV_GroupID)
+{
+    uint globalThreadId = VoxelStart_ + groupId.x * THREADS_PER_GROUP + groupIndex;
+    uint totalVoxels = ChunkCount_ * VoxelsPerChunk_;
+    if (globalThreadId >= totalVoxels)
+        return;
+
+    uint chunkIndex = globalThreadId / VoxelsPerChunk_;
+    uint voxelIndexInChunk = globalThreadId % VoxelsPerChunk_;
+
+    uint voxelBufferIndex = chunkIndex * VoxelsPerChunk_ + voxelIndexInChunk;
+    uint mat = VoxelMaterialBuffer[voxelBufferIndex];
+    uint prev;
+    if (mat == 0)
+        InterlockedAdd(AirCount[chunkIndex], 1, prev);
+    else
+        InterlockedAdd(SolidCount[chunkIndex], 1, prev);
+}
+
+// Resolve flags from counts; skip freed slots (slotGeneration check).
+[numthreads(64, 1, 1)]
+void AnalyzeChunkFlags(uint id : SV_DispatchThreadID)
+{
+    if (id >= ChunkCount_)
+        return;
+
+    ChunkDescriptor desc = ChunkDescriptors[id];
+    if (ExpectedGeneration[id] != desc.slotGeneration)
+        return;
+    if (desc.slotGeneration == 0)
+        return;
+
+    uint solid = SolidCount[id];
+    uint air = AirCount[id];
+    uint flags = 0;
+    if (solid == 0)
+        flags = CHUNK_FLAG_EMPTY;
+    else if (air == 0)
+        flags = CHUNK_FLAG_SOLID;
+    else
+        flags = CHUNK_FLAG_MIXED;
+    desc.flags = flags;
+    ChunkDescriptors[id] = desc;
+}
+
+// Downsample 2x2x2 -> 1 voxel for LOD (majority vote). Run per chunk with ChunkIndex_ set.
+[numthreads(4, 4, 4)]
+void DownsampleLOD(uint3 id : SV_DispatchThreadID)
+{
+    uint lodSize = max(1, ChunkSize_ >> LodLevel_);
+    if (any(id >= lodSize))
+        return;
+    ChunkDescriptor desc = ChunkDescriptors[ChunkIndex_];
+    if (ExpectedGeneration[ChunkIndex_] != desc.slotGeneration)
+        return;
+    if (desc.slotGeneration == 0)
+        return;
+    uint voxelOffset = desc.voxelOffset;
+    uint count = 0;
+    uint matSum = 0;
+    for (uint dz = 0; dz < 2; dz++)
+        for (uint dy = 0; dy < 2; dy++)
+            for (uint dx = 0; dx < 2; dx++)
+            {
+                uint3 p = id * 2 + uint3(dx, dy, dz);
+                if (any(p >= ChunkSize_)) continue;
+                uint idx = voxelOffset + p.x + p.y * ChunkSize_ + p.z * ChunkSize_ * ChunkSize_;
+                uint m = VoxelMaterialBuffer[idx];
+                if (m != 0) { count++; matSum += m; }
+            }
+    uint lodVol = lodSize * lodSize * lodSize;
+    uint outIdx = ChunkIndex_ * lodVol + id.x + id.y * lodSize + id.z * lodSize * lodSize;
+    LodVoxelBuffer[outIdx] = (count >= 4) ? (matSum / count) : 0;
+}

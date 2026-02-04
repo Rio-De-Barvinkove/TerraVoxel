@@ -3,6 +3,7 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Core
 {
+    /// <summary>Math helpers for voxel/chunk coordinates (e.g. floor with int32 clamp).</summary>
     public static class VoxelMath
     {
         static bool _loggedClamp;

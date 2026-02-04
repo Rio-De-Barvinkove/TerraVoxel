@@ -5,6 +5,7 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
+    /// <summary>Processes integration queue: applies completed mesh jobs to chunks, registers cache, queues remesh. Delegates to ChunkManager when no separate manager.</summary>
     internal sealed class ChunkIntegrationManager
     {
         readonly ChunkManager.Context _ctx;
