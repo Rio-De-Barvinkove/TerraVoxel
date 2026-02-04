@@ -76,15 +76,24 @@ namespace TerraVoxel.Voxel.Streaming
             _ctx.SafeSpawnWorldX0 = baseChunkX * chunkSize;
             _ctx.SafeSpawnWorldZ0 = baseChunkZ * chunkSize;
 
-            int maxH = 0;
-            var noiseStack = _ctx.NoiseStack;
-            for (int x = 0; x < _ctx.SafeSpawnSizeVoxels; x++)
+            int maxH;
+            if (_ctx.UseGpuPipeline)
             {
-                for (int z = 0; z < _ctx.SafeSpawnSizeVoxels; z++)
+                // GPU terrain uses BaseHeight + noise*HeightScale (noise 0..1). Use mid-range so snap Y matches visible terrain.
+                maxH = Mathf.RoundToInt(worldGen.BaseHeight + worldGen.HeightScale * 0.5f);
+            }
+            else
+            {
+                maxH = 0;
+                var noiseStack = _ctx.NoiseStack;
+                for (int x = 0; x < _ctx.SafeSpawnSizeVoxels; x++)
                 {
-                    float h = ChunkGenerator.SampleHeightAt(_ctx.SafeSpawnWorldX0 + x, _ctx.SafeSpawnWorldZ0 + z, worldGen, noiseStack);
-                    int hi = Mathf.FloorToInt(h);
-                    if (hi > maxH) maxH = hi;
+                    for (int z = 0; z < _ctx.SafeSpawnSizeVoxels; z++)
+                    {
+                        float h = ChunkGenerator.SampleHeightAt(_ctx.SafeSpawnWorldX0 + x, _ctx.SafeSpawnWorldZ0 + z, worldGen, noiseStack);
+                        int hi = Mathf.FloorToInt(h);
+                        if (hi > maxH) maxH = hi;
+                    }
                 }
             }
 

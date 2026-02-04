@@ -56,6 +56,10 @@ namespace TerraVoxel.Voxel.GPU
         {
             if (_renderer == null) return;
 
+            var cam = renderingData.cameraData.camera;
+            if (cam != null)
+                _renderer.SetBoundsFromCamera(cam);
+
             CommandBuffer cmd = CommandBufferPool.Get(ProfilerTag);
             if (_renderer.RecordDrawToCommandBuffer(cmd))
                 context.ExecuteCommandBuffer(cmd);

@@ -70,6 +70,14 @@ namespace TerraVoxel.Voxel.GPU
             }
         }
 
+        /// <summary>Update bounds so DrawProceduralIndirect is not culled when camera is far from origin. Call before draw when camera is available.</summary>
+        public void SetBoundsFromCamera(Camera camera)
+        {
+            if (camera == null) return;
+            float s = Mathf.Max(camera.farClipPlane * 2f, 1000f);
+            _bounds = new Bounds(camera.transform.position, new Vector3(s, s, s));
+        }
+
         /// <summary>Render visible chunks. Call after Culler.Cull. Requires instancedMaterial and worldState set.</summary>
         public void Render(Camera camera)
         {
@@ -220,6 +228,7 @@ namespace TerraVoxel.Voxel.GPU
             int layer = LayerMask.NameToLayer(layerName);
             if (layer < 0) layer = 0;
 
+            SetBoundsFromCamera(camera);
             PrepareDrawBuffers();
             Graphics.DrawProceduralIndirect(
                 _materialInstance,
