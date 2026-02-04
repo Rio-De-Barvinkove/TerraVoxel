@@ -37,6 +37,7 @@ Shader "TerraVoxel/VoxelTriplanarURP_Instanced"
                 float _TriplanarScale;
                 float _NormalStrength;
                 int _LayerIndex;
+                int _MaxVerticesPerInstance;
             CBUFFER_END
 
             StructuredBuffer<float4x4> _InstanceMatrices;
@@ -75,8 +76,10 @@ Shader "TerraVoxel/VoxelTriplanarURP_Instanced"
                 Varyings o;
                 uint chunkIdx = _VisibleChunkIndices[v.instanceID];
                 ChunkDescriptor desc = _ChunkDescriptors[chunkIdx];
-                uint globalVertexIdx = desc.meshOffset + v.vertexID;
-                if (v.vertexID >= desc.vertexCount)
+                uint maxV = (uint)max(1, _MaxVerticesPerInstance);
+                uint instanceVertexID = v.vertexID % maxV;
+                uint globalVertexIdx = desc.meshOffset + instanceVertexID;
+                if (instanceVertexID >= desc.vertexCount)
                 {
                     o.positionCS = float4(0, 0, 0, 0);
                     o.positionWS = 0;

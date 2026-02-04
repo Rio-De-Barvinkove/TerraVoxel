@@ -25,9 +25,24 @@ namespace TerraVoxel.Voxel.Core
         bool _usingSharedMesh;
         bool _gpuRendered;
 
+        /// <summary>Initialize with coord only; transform.position is not set (caller must set).</summary>
         public void Initialize(ChunkCoord coord)
         {
+            Initialize(coord, 0f);
+        }
+
+        /// <summary>Initialize with coord and set transform.position to chunk center (coord + 0.5) * chunkWorldSize. Use chunkWorldSize = ChunkSize * VoxelSize.</summary>
+        public void Initialize(ChunkCoord coord, float chunkWorldSize)
+        {
             Coord = coord;
+            if (chunkWorldSize > 0f)
+            {
+                float h = chunkWorldSize * 0.5f;
+                transform.position = new Vector3(
+                    coord.X * chunkWorldSize + h,
+                    coord.Y * chunkWorldSize + h,
+                    coord.Z * chunkWorldSize + h);
+            }
             if (_filter == null) _filter = gameObject.GetComponent<MeshFilter>();
             if (_renderer == null) _renderer = gameObject.GetComponent<MeshRenderer>();
             if (_collider == null) _collider = gameObject.GetComponent<MeshCollider>();
@@ -57,9 +72,10 @@ namespace TerraVoxel.Voxel.Core
             }
         }
 
-        /// <summary>Mark chunk as rendered by GPU at slot; disables Renderer to avoid double-draw. MeshFilter has no enabled property.</summary>
+        /// <summary>Mark chunk as rendered by GPU at slot; disables Renderer to avoid double-draw. No-op if slot &lt; 0.</summary>
         public void ApplyGpuMeshRef(int slot)
         {
+            if (slot < 0) return;
             Data.GpuSlot = slot;
             _gpuRendered = true;
             if (_renderer != null) _renderer.enabled = false;

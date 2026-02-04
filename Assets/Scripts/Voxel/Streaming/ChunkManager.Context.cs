@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
@@ -16,13 +17,14 @@ namespace TerraVoxel.Voxel.Streaming
 {
     public partial class ChunkManager
     {
+        /// <summary>Internal context for streaming subsystems. Populated by ChunkManager.Init; Loader, Jobs, Cache, etc. may be null until then. Main-thread only; no lock. Properties delegate to Owner; setters have no min/max validation (Owner fields are serialized).</summary>
         internal sealed class Context
         {
             readonly ChunkManager _owner;
 
             internal Context(ChunkManager owner)
             {
-                _owner = owner;
+                _owner = owner ?? throw new ArgumentNullException(nameof(owner));
             }
 
             internal ChunkManager Owner => _owner;
@@ -137,6 +139,7 @@ namespace TerraVoxel.Voxel.Streaming
 
             internal Dictionary<ChunkCoord, Chunk> Active => _owner._active;
             internal Dictionary<ChunkCoord, CachedChunkData> DataCache => _owner._dataCache;
+            internal List<ChunkCoord> DataCacheEvictionOrder => _owner._dataCacheEvictionOrder;
             internal Queue<ChunkCoord> Pending => _owner._pending;
             internal HashSet<ChunkCoord> PendingSet => _owner._pendingSet;
             internal Queue<ChunkCoord> Preload => _owner._preload;

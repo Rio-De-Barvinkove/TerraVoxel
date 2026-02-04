@@ -4,9 +4,10 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
-    /// <summary>Partial: pending queue, radius checks, GetInitialLodStep.</summary>
+    /// <summary>Partial: pending queue, distance heap, radius checks, GetInitialLodStep. All access to _pendingSet, _pending, _pendingDistanceHeap is main-thread only; no lock. _pending, viewCone, worldGen, player, loadRadius, etc. are defined in other ChunkManager partials.</summary>
     public partial class ChunkManager
     {
+        /// <summary>True when center moved by pendingResetDistance or pending over cap. Caller must call RebuildPendingQueue(center) when true so _lastPendingCenter is updated.</summary>
         bool ShouldRebuildPending(ChunkCoord center)
         {
             if (!_hasPendingCenter)
@@ -30,6 +31,7 @@ namespace TerraVoxel.Voxel.Streaming
             return false;
         }
 
+        /// <summary>Clears and refills pending from loadRadius box. Caps size to pendingQueueCap when &gt; 0. Distance is XZ-only (horizontal).</summary>
         internal void RebuildPendingQueue(ChunkCoord center)
         {
             _pending.Clear();
@@ -41,28 +43,36 @@ namespace TerraVoxel.Voxel.Streaming
             _lastPendingCenter = center;
             _hasPendingCenter = true;
 
+            if (worldGen == null) return;
+            int columnChunks = worldGen.ColumnChunks;
+            if (columnChunks <= 0) return;
+
             for (int dz = -loadRadius; dz <= loadRadius; dz++)
             {
                 for (int dx = -loadRadius; dx <= loadRadius; dx++)
                 {
-                    for (int dy = 0; dy < worldGen.ColumnChunks; dy++)
+                    for (int dy = 0; dy < columnChunks; dy++)
                     {
+                        if (pendingQueueCap > 0 && _pendingSet.Count >= pendingQueueCap)
+                            return;
                         var coord = new ChunkCoord(center.X + dx, dy, center.Z + dz);
                         if (_active.ContainsKey(coord)) continue;
-                        if (viewCone != null && viewCone.Enabled)
-                        {
-                            if (_pendingSet.Add(coord))
-                                viewCone.EnqueueWithPriority(coord, center, player);
-                        }
-                        else
-                        {
-                            _pendingSet.Add(coord);
-                        }
+                        if (_pendingSet.Add(coord) && viewCone != null && viewCone.Enabled)
+                            viewCone.EnqueueWithPriority(coord, center, player);
                     }
                 }
             }
         }
 
+        /// <summary>When viewCone is enabled but heap is empty and _pendingSet has entries, repopulates viewCone from _pendingSet so dequeue can progress. Call once per frame from MaintainRadius.</summary>
+        internal void RepopulateViewConeFromPendingSet(ChunkCoord center)
+        {
+            if (viewCone == null || !viewCone.Enabled || viewCone.Count > 0 || _pendingSet.Count == 0 || player == null) return;
+            foreach (var c in _pendingSet)
+                viewCone.EnqueueWithPriority(c, center, player);
+        }
+
+        /// <summary>Removes one pending coord (farthest when no viewCone). O(n) over pending set when using TryFindFarthestPending.</summary>
         internal void DropOnePendingOldest(ChunkCoord center)
         {
             if (PendingCount == 0) return;
@@ -78,25 +88,26 @@ namespace TerraVoxel.Voxel.Streaming
             _pendingSet.Remove(dropped);
         }
 
+        /// <summary>Dequeues one pending coord (closest when no viewCone). When viewCone enabled, returns first from heap; if heap empty but _pendingSet has entries, falls back to distance-based dequeue.</summary>
         internal bool TryDequeuePending(ChunkCoord center, out ChunkCoord coord)
         {
-            if (PendingCount == 0)
-            {
-                coord = default;
-                return false;
-            }
+            coord = default;
+            if (PendingCount == 0 && _pendingSet.Count == 0) return false;
             if (viewCone != null && viewCone.Enabled)
             {
-                while (viewCone.TryDequeue(out coord))
+                if (viewCone.TryDequeue(out coord))
                 {
-                    if (_pendingSet.Remove(coord))
-                        return true;
+                    _pendingSet.Remove(coord);
+                    return true;
                 }
+                if (_pendingSet.Count > 0)
+                    return TryFindClosestPending(center, out coord);
                 return false;
             }
             return TryFindClosestPending(center, out coord);
         }
 
+        /// <summary>Returns closest pending coord by XZ distance (Y ignored). Rebuilds heap when center changes; O(n) over _pendingSet.</summary>
         internal bool TryFindClosestPending(ChunkCoord center, out ChunkCoord coord)
         {
             coord = default;
@@ -112,6 +123,7 @@ namespace TerraVoxel.Voxel.Streaming
             return false;
         }
 
+        /// <summary>XZ-only distance squared (Y ignored for horizontal radius). For vertical worlds consider including Y.</summary>
         static int PendingDistanceSq(ChunkCoord c, ChunkCoord center)
         {
             int dx = c.X - center.X;
@@ -119,6 +131,7 @@ namespace TerraVoxel.Voxel.Streaming
             return dx * dx + dz * dz;
         }
 
+        /// <summary>Rebuilds min-heap from _pendingSet for current center. O(n) per center change.</summary>
         void BuildPendingDistanceHeap(ChunkCoord center)
         {
             _pendingDequeueCenter = center;
@@ -167,6 +180,7 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
+        /// <summary>Farthest pending coord by XZ distance. O(n) over _pendingSet.</summary>
         internal bool TryFindFarthestPending(ChunkCoord center, out ChunkCoord coord)
         {
             coord = default;
@@ -177,7 +191,7 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 int dx = c.X - center.X;
                 int dz = c.Z - center.Z;
-                int d = dx * dx + dz * dz; // 2D distance (XZ)
+                int d = dx * dx + dz * dz;
                 if (d > bestDistSq)
                 {
                     bestDistSq = d;
@@ -188,8 +202,10 @@ namespace TerraVoxel.Voxel.Streaming
             return true;
         }
 
+        /// <summary>True if coord is within keepRadius of center (XZ only; Y checked against ColumnChunks bounds).</summary>
         internal bool IsWithinKeepRadius(ChunkCoord coord, ChunkCoord center, int keepRadius)
         {
+            if (keepRadius < 0) return false;
             if (worldGen == null) return false;
             if (coord.Y < 0 || coord.Y >= worldGen.ColumnChunks) return false;
             int dx = Mathf.Abs(coord.X - center.X);
@@ -197,8 +213,10 @@ namespace TerraVoxel.Voxel.Streaming
             return dx <= keepRadius && dz <= keepRadius;
         }
 
+        /// <summary>True if coord is within radius of center (XZ only; Y checked against ColumnChunks bounds).</summary>
         internal bool IsWithinLoadRadius(ChunkCoord coord, ChunkCoord center, int radius)
         {
+            if (radius < 0) return false;
             if (worldGen == null) return false;
             if (coord.Y < 0 || coord.Y >= worldGen.ColumnChunks) return false;
             int dx = Mathf.Abs(coord.X - center.X);
@@ -206,6 +224,7 @@ namespace TerraVoxel.Voxel.Streaming
             return dx <= radius && dz <= radius;
         }
 
+        /// <summary>Initial LOD step for chunk not yet meshed. Uses current step 1 in ResolveLevel because chunk has no mesh yet. XZ distance only.</summary>
         internal int GetInitialLodStep(ChunkCoord coord)
         {
             if (enableFullLod && lodSettings != null && player != null && worldGen != null)

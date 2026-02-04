@@ -1,6 +1,6 @@
 # ROADMAP 
 
-**Оновлено:** 23 січня 2026
+**Оновлено:** 4 лютого 2026
 
 ---
 
@@ -110,6 +110,13 @@
 - [X] **Phase 9:** SVO GPU — відкладено (research-level, post-MVP).
 - [X] **Slot generation check:** у compute shaders (ChunkAnalysis, ChunkCulling) перевірка `slotGeneration` vs ExpectedGeneration для use-after-free.
 - [X] **ChunkAnalysis full coverage:** ClearCounts → AnalyzeChunkCount (atomics) → AnalyzeChunkFlags; повний обʼєм чанка.
+- [X] **Chunk position = центр:** Initialize(coord, chunkWorldSize) встановлює transform.position = (coord+0.5)*chunkWorldSize; Spawn викликає Initialize(coord, chunkWorldSize), узгоджено з GPU AABB center.
+- [X] **ChunkData валідація:** Allocate перевіряє size>0; ValidateSize(expectedSize) після Allocate/load; Index() — bounds check у редакторі (warning при out-of-bounds).
+- [X] **PlayerTracker:** WorldToChunk при chunkSize<=0 — Debug.LogWarning замість тихого default.
+- [X] **GpuWorldState UpdateDescriptor:** оновлюються лише MeshOffset/VertexCount/Flags; ValidateDescriptor попереджає лише при coord (0,0,0) з геометрією (generation 0 — валідний для першого виділення).
+- [X] **GpuDrivenRenderer:** _MaxVerticesPerInstance у шейдер; debugLogDrawArgs; GpuDrivenRenderFeature + GpuDrivenRenderPass (URP RenderGraph, SetRenderAttachmentDepth).
+- [X] **VoxelTriplanarURP_Instanced:** instanceVertexID = vertexID % MaxVerticesPerInstance; cull при instanceVertexID >= desc.vertexCount.
+- [X] **ChunkCulling.compute:** FrustumCull — VisibilityFlags[id]=0 на початку для кожного id < ChunkCount_.
 
 ---
 

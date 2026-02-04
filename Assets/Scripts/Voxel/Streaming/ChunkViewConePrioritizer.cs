@@ -19,7 +19,8 @@ namespace TerraVoxel.Voxel.Streaming
         [SerializeField] bool useMainCamera = true;
         [SerializeField] bool ignoreVertical = true;
         [SerializeField] bool includeVerticalDistance = false;
-        [SerializeField] float coneHalfAngleDeg = 70f;
+        [Tooltip("Half-angle of view cone in degrees. Clamped to [0, 180] at use.")]
+        [SerializeField] [Range(0f, 180f)] float coneHalfAngleDeg = 70f;
         [Header("Visual Weights (not normalized; one may dominate)")]
         [Tooltip("Tune weights relative to each other; not auto-normalized.")]
         [SerializeField] bool useVisualWeights = true;
@@ -31,7 +32,10 @@ namespace TerraVoxel.Voxel.Streaming
         [Tooltip("Optional: used for surface/height bonus. If null or invalid, that part of the score is skipped.")]
         [SerializeField] WorldGenConfig worldGen;
 
+        /// <summary>Main-thread only; one-time warning when worldGen/BaseHeight fails in ComputeScore.</summary>
         static bool _warnedWorldGenScore;
+        static bool _warnedViewNull;
+        static bool _warnedVerticalConflict;
 
         /// <summary>Priority queue: higher score = dequeued first. Stored as (coord, score); heap ordered by score descending.</summary>
         readonly List<Entry> _heap = new List<Entry>(256);
@@ -58,6 +62,11 @@ namespace TerraVoxel.Voxel.Streaming
         /// <summary>Score for a chunk (distance, view cone, surface band). Called once per enqueue; weights not normalized. When distanceOnly: score = 1/(1+dist), strict priority = distance (closer = higher).</summary>
         public float ComputeScore(ChunkCoord c, ChunkCoord center, Vector3 forward, bool includeVerticalDistance)
         {
+            if (ignoreVertical && includeVerticalDistance && !_warnedVerticalConflict)
+            {
+                _warnedVerticalConflict = true;
+                Debug.LogWarning("[ChunkViewConePrioritizer] ignoreVertical and includeVerticalDistance are both true; vertical is used in distance but ignored in view cone. Consider aligning settings.");
+            }
             int dx = c.X - center.X;
             int dy = c.Y - center.Y;
             int dz = c.Z - center.Z;
@@ -289,11 +298,18 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
+        /// <summary>viewTransform, else Camera.main if useMainCamera, else player. Returns null if all null; callers handle (EnqueueWithPriority returns, IsInViewCone returns true).</summary>
         Transform ResolveViewTransform(Transform player)
         {
             if (viewTransform != null) return viewTransform;
             if (useMainCamera && Camera.main != null) return Camera.main.transform;
-            return player != null ? player : null;
+            if (player != null) return player;
+            if (!_warnedViewNull)
+            {
+                _warnedViewNull = true;
+                Debug.LogWarning("[ChunkViewConePrioritizer] ResolveViewTransform: viewTransform, Camera.main, and player are null. Assign viewTransform or ensure Camera.main/player is set.");
+            }
+            return null;
         }
     }
 }

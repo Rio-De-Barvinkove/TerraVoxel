@@ -1,17 +1,25 @@
+using System;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
-    /// <summary>Delegates radius maintenance and pending/preload spawn to ChunkManager. When UseGpuPipeline, respects GpuWorldState.ChunkCount vs GpuMaxChunks.</summary>
+    /// <summary>Facade: delegates radius maintenance and pending/preload spawn to ChunkManager. When UseGpuPipeline, respects GpuWorldState.ChunkCount vs GpuMaxChunks. ProcessPending/ProcessPreload use hard iteration limits to avoid runaway loops when viewCone rejects.</summary>
     internal sealed class ChunkLoader
     {
         readonly ChunkManager.Context _ctx;
+        static bool _loggedDequeueFalse;
+        static bool _loggedOutsideRadius;
+        static bool _loggedAlreadyActive;
+        static bool _loggedBudget;
+        static bool _loggedGpuLimit;
+        static bool _loggedGenLimit;
+        static bool _loggedProcessPendingEntered;
 
         public ChunkLoader(ChunkManager.Context ctx)
         {
-            _ctx = ctx;
+            _ctx = ctx ?? throw new ArgumentNullException(nameof(ctx));
         }
 
         Transform player => _ctx.Player;
@@ -25,24 +33,58 @@ namespace TerraVoxel.Voxel.Streaming
 
         internal void ProcessPending()
         {
-            if (player == null || worldGen == null) return;
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
+            if (_ctx.Player == null || _ctx.WorldGen == null) return;
+            ChunkCoord center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize);
+
+            int pendingCount = Mathf.Max(_ctx.Owner.PendingCount, _ctx.Owner.PendingSetCount);
+            if (pendingCount > 0 && !_loggedProcessPendingEntered)
+            {
+                _loggedProcessPendingEntered = true;
+                Debug.Log($"[ChunkManager] ProcessPending entered: PendingCount={_ctx.Owner.PendingCount}, PendingSetCount={_ctx.Owner.PendingSetCount}, center={center}");
+            }
 
             int spawned = 0;
-            while (_ctx.Owner.PendingCount > 0 && spawned < maxSpawnsPerFrame)
+            int maxIterations = Mathf.Min(pendingCount > 0 ? pendingCount : 1, Mathf.Max(maxSpawnsPerFrame * 8, 64));
+            int iterations = 0;
+
+            while ((_ctx.Owner.PendingCount > 0 || _ctx.Owner.PendingSetCount > 0) && spawned < maxSpawnsPerFrame && iterations < maxIterations)
             {
-                if (_ctx.BudgetExceeded()) break;
-                if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuMaxChunks) break;
-                if (!_ctx.UseGpuPipeline && _ctx.GenJobs.Count >= _ctx.CurrentMaxGenJobsInFlight) break;
-                if (!TryDequeuePending(center, out var coord))
-                    break;
-                if (IsWithinLoadRadius(coord, center, loadRadius) == false) continue;
-                if (_ctx.Active.ContainsKey(coord)) continue;
-                if (viewCone != null && viewCone.Enabled && _ctx.WorkDropAngleDeg > 0f && !viewCone.IsInViewCone(coord, center, player))
+                iterations++;
+                if (_ctx.BudgetExceeded())
                 {
-                    _ctx.PendingSet.Add(coord);
-                    if (viewCone != null && viewCone.Enabled)
-                        viewCone.EnqueueWithPriority(coord, center, player);
+                    if (!_loggedBudget) { _loggedBudget = true; Debug.Log("[ChunkManager] ProcessPending: break BudgetExceeded"); }
+                    break;
+                }
+                if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuMaxChunks)
+                {
+                    if (!_loggedGpuLimit)
+                    {
+                        _loggedGpuLimit = true;
+                        string hint = _ctx.HybridSave != null
+                            ? " With hybrid save, slots are freed after readback; increase Gpu Max Chunks or reduce load radius."
+                            : " Increase Gpu Max Chunks in ChunkManager or reduce load radius.";
+                        Debug.LogWarning($"[ChunkManager] GPU chunk limit reached: ChunkCount={_ctx.GpuWorldState.ChunkCount} >= GpuMaxChunks={_ctx.GpuMaxChunks}. No new chunks will spawn.{hint}");
+                    }
+                    break;
+                }
+                if (!_ctx.UseGpuPipeline && _ctx.GenJobs.Count >= _ctx.CurrentMaxGenJobsInFlight)
+                {
+                    if (!_loggedGenLimit) { _loggedGenLimit = true; Debug.Log($"[ChunkManager] ProcessPending: break GenJobs={_ctx.GenJobs.Count} >= max"); }
+                    break;
+                }
+                if (!TryDequeuePending(center, out var coord))
+                {
+                    if (!_loggedDequeueFalse) { _loggedDequeueFalse = true; Debug.Log("[ChunkManager] ProcessPending: TryDequeuePending returned false"); }
+                    break;
+                }
+                if (!IsWithinLoadRadius(coord, center, loadRadius))
+                {
+                    if (!_loggedOutsideRadius) { _loggedOutsideRadius = true; Debug.Log($"[ChunkManager] ProcessPending: coord {coord} outside load radius center={center} radius={loadRadius}"); }
+                    continue;
+                }
+                if (_ctx.Active.ContainsKey(coord))
+                {
+                    if (!_loggedAlreadyActive) { _loggedAlreadyActive = true; Debug.Log($"[ChunkManager] ProcessPending: coord {coord} already in Active"); }
                     continue;
                 }
                 SpawnChunk(coord);
@@ -53,17 +95,27 @@ namespace TerraVoxel.Voxel.Streaming
 
         internal void ProcessPreload()
         {
-            if (!enablePreload) return;
-            if (player == null || worldGen == null) return;
+            if (!enablePreload)
+            {
+                _ctx.Preload.Clear();
+                _ctx.PreloadSet.Clear();
+                return;
+            }
+            if (_ctx.Player == null || _ctx.WorldGen == null) return;
             if (_ctx.Preload.Count == 0) return;
             if (_ctx.BudgetExceeded()) return;
 
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
+            ChunkCoord center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize);
             int effectivePreloadRadius = _ctx.EffectivePreloadRadius();
 
             int spawned = 0;
-            while (_ctx.Preload.Count > 0 && spawned < _ctx.CurrentMaxPreloadsPerFrame)
+            int preloadCount = _ctx.Preload.Count;
+            int maxIterations = Mathf.Min(preloadCount > 0 ? preloadCount : 1, Mathf.Max(_ctx.CurrentMaxPreloadsPerFrame * 4, 32));
+            int iterations = 0;
+
+            while (_ctx.Preload.Count > 0 && spawned < _ctx.CurrentMaxPreloadsPerFrame && iterations < maxIterations)
             {
+                iterations++;
                 if (_ctx.BudgetExceeded()) break;
                 if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuMaxChunks) break;
                 if (!_ctx.UseGpuPipeline && _ctx.GenJobs.Count >= _ctx.CurrentMaxGenJobsInFlight) break;
@@ -103,7 +155,7 @@ namespace TerraVoxel.Voxel.Streaming
         internal bool TryFindFarthestPending(ChunkCoord center, out ChunkCoord coord) => _ctx.Owner.TryFindFarthestPending(center, out coord);
         internal void DropOnePendingOldest(ChunkCoord center) => _ctx.Owner.DropOnePendingOldest(center);
         internal void RebuildPendingQueue(ChunkCoord center) => _ctx.Owner.RebuildPendingQueue(center);
-        internal bool IsWithinKeepRadius(ChunkCoord coord, ChunkCoord center, int keepRadius) => _ctx.Owner.IsWithinKeepRadius(coord, center, keepRadius);
-        internal bool IsWithinLoadRadius(ChunkCoord coord, ChunkCoord center, int radius) => _ctx.Owner.IsWithinLoadRadius(coord, center, radius);
+        internal bool IsWithinKeepRadius(ChunkCoord coord, ChunkCoord center, int keepRadius) => keepRadius >= 0 && _ctx.Owner.IsWithinKeepRadius(coord, center, keepRadius);
+        internal bool IsWithinLoadRadius(ChunkCoord coord, ChunkCoord center, int radius) => radius >= 0 && _ctx.Owner.IsWithinLoadRadius(coord, center, radius);
     }
 }

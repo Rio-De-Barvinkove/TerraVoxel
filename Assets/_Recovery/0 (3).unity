@@ -380,8 +380,8 @@ MonoBehaviour:
   chunkPrefab: {fileID: 2085738739}
   worldGen: {fileID: 11400000, guid: 182e37385ea739840907a153355f5e7d, type: 2}
   noiseStack: {fileID: 11400000, guid: 7be5acb9b4187354ea266e68d3f3b281, type: 2}
-  loadRadius: 20
-  unloadRadius: 30
+  loadRadius: 7
+  unloadRadius: 10
   addColliders: 1
   physicsOptimizer: {fileID: 448214055}
   maxSpawnsPerFrame: 20
@@ -396,7 +396,7 @@ MonoBehaviour:
   streamingPaused: 0
   enablePreload: 1
   preloadRadius: 2
-  maxPreloadsPerFrame: 20
+  maxPreloadsPerFrame: 16
   removalBudgetMs: 3
   workDropDistance: 20
   workDropAngleDeg: 80
@@ -416,12 +416,16 @@ MonoBehaviour:
   enableLodTransitionLog: 0
   occlusionCuller: {fileID: 448214058}
   useGpuPipeline: 1
+  gpuPipelineComputeAssets: {fileID: 0}
   voxelGenerationCompute: {fileID: 7200000, guid: a33c9242cca3d7f4594bb598b6dfbf58, type: 3}
   chunkAnalysisCompute: {fileID: 7200000, guid: d3e2a2a9c9946fb4282007c69646940e, type: 3}
   chunkCullingCompute: {fileID: 7200000, guid: 0053e47e66c56ad499ad20082a6dbdcb, type: 3}
   voxelMeshingCompute: {fileID: 7200000, guid: 04709ffb7c7bd7343b32ebd369757d32, type: 3}
   gpuDrivenRenderer: {fileID: 448214060}
-  gpuMaxChunks: 1024
+  gpuMaxChunks: 1836
+  gpuFrustumCulling: 0
+  gpuFrustumMarginScale: 6
+  gpuOcclusionCulling: 0
   svoManager: {fileID: 448214057}
   streamingBudget:
     enabled: 0
@@ -765,9 +769,11 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.GPU.GpuDrivenRenderer
   instancedMaterial: {fileID: 2100000, guid: 281c2c71e6c4cc54e867d874a1403e80, type: 2}
+  voxelMaterialLibrary: {fileID: 11400000, guid: e1c398cf33139d64998e86159899320f, type: 2}
   layerName: Default
   shadowCasting: 0
-  debugLog: 1
+  debugLog: 0
+  debugLogDrawArgs: 0
   drawViaRenderFeature: 1
 --- !u!4 &492199355 stripped
 Transform:

@@ -3,11 +3,13 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
-    /// <summary>Partial: MaintainRadius, ProcessFarRangeLod, ProcessPending, ProcessPreload.</summary>
+    /// <summary>Partial: MaintainRadius, ProcessFarRangeLod, ProcessPending, ProcessPreload. Main-thread only.</summary>
     public partial class ChunkManager
     {
+        /// <summary>Maintains load/preload/keep radius: fills pending/preload, builds remove candidates, queues removal and far-range LOD. Requires worldGen and player. Uses nested loops over radius and ColumnChunks.</summary>
         internal void MaintainRadius()
         {
+            if (worldGen == null || player == null) return;
             if (worldGen.ColumnChunks < 1)
             {
                 if (!_warnedColumnChunksZero)
@@ -21,6 +23,7 @@ namespace TerraVoxel.Voxel.Streaming
             MaybeDropWork(center);
             if (ShouldRebuildPending(center))
                 RebuildPendingQueue(center);
+            RepopulateViewConeFromPendingSet(center);
             int effectivePreloadRadius = EffectivePreloadRadius();
 
             for (int dz = -loadRadius; dz <= loadRadius; dz++)
@@ -111,7 +114,7 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
-        /// <summary>Stub: render-only chunks beyond unloadRadius with low LOD/SVO not yet implemented. Queue capped to avoid unbounded growth.</summary>
+        /// <summary>Stub: render-only chunks beyond unloadRadius with low LOD/SVO not yet implemented. Drains far-range queue down to cap to avoid unbounded growth. Main-thread only.</summary>
         internal void ProcessFarRangeLod()
         {
             const int farRangeQueueCap = 1024;
@@ -122,13 +125,14 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
+        /// <summary>Dequeues pending coords and spawns up to maxSpawnsPerFrame (or CurrentMax when adaptive). Requires player and worldGen. Main-thread only.</summary>
         internal void ProcessPending()
         {
             if (player == null || worldGen == null) return;
             ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
 
             int spawned = 0;
-            while (PendingCount > 0 && spawned < maxSpawnsPerFrame)
+            while ((PendingCount > 0 || PendingSetCount > 0) && spawned < maxSpawnsPerFrame)
             {
                 if (BudgetExceeded()) break;
                 if (useGpuPipeline && _gpuWorldState != null)
@@ -141,19 +145,14 @@ namespace TerraVoxel.Voxel.Streaming
                     break;
                 if (!IsWithinLoadRadius(coord, center, loadRadius)) continue;
                 if (_active.ContainsKey(coord)) continue;
-                if (viewCone != null && viewCone.Enabled && workDropAngleDeg > 0f && !viewCone.IsInViewCone(coord, center, player))
-                {
-                    _pendingSet.Add(coord);
-                    if (viewCone != null && viewCone.Enabled)
-                        viewCone.EnqueueWithPriority(coord, center, player);
-                    continue;
-                }
+                // View cone only affects dequeue order (priority); always spawn dequeued coord to avoid 0 spawns when camera looks away.
                 SpawnChunk(coord);
                 spawned++;
             }
             _spawnedLastFrame = spawned;
         }
 
+        /// <summary>Dequeues preload coords and spawns up to CurrentMaxPreloadsPerFrame. Requires player and worldGen. Main-thread only.</summary>
         internal void ProcessPreload()
         {
             if (!enablePreload) return;

@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Meshing;
@@ -7,7 +8,7 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
-    /// <summary>Data and mesh cache for chunks; hash/register/release/evict. Used when EnableDataCache/EnableMeshCache; GPU path uses GpuWorldState for mesh.</summary>
+    /// <summary>Data and mesh cache for chunks; hash/register/release/evict. Used when EnableDataCache/EnableMeshCache; GPU path uses GpuWorldState for mesh. DataCache/MeshCache are main-thread only (no lock); if Burst jobs ever read, add synchronization.</summary>
     internal sealed class ChunkCacheManager
     {
         readonly ChunkManager.Context _ctx;
@@ -18,6 +19,7 @@ namespace TerraVoxel.Voxel.Streaming
         }
 
         Dictionary<ChunkCoord, ChunkManager.CachedChunkData> _dataCache => _ctx.DataCache;
+        List<ChunkCoord> _dataCacheEvictionOrder => _ctx.DataCacheEvictionOrder;
         Dictionary<ulong, ChunkManager.CachedMeshEntry> _meshCache => _ctx.MeshCache;
         Dictionary<ChunkCoord, ulong> _chunkMeshHashes => _ctx.ChunkMeshHashes;
         Dictionary<ChunkCoord, ChunkManager.PendingCachedMesh> _pendingCachedMeshes => _ctx.PendingCachedMeshes;
@@ -55,25 +57,22 @@ namespace TerraVoxel.Voxel.Streaming
 #endif
             }
 
-            while (_dataCache.Count >= cacheCap && _dataCache.Count > 0)
+            // Evict in FIFO order (oldest first) using eviction list; O(1) per eviction.
+            while (_dataCache.Count >= cacheCap && _dataCacheEvictionOrder.Count > 0)
             {
-                var first = default(ChunkCoord);
-                foreach (var key in _dataCache.Keys)
-                {
-                    first = key;
-                    break;
-                }
-                if (_dataCache.TryGetValue(first, out var oldCached))
+                var evictCoord = _dataCacheEvictionOrder[0];
+                _dataCacheEvictionOrder.RemoveAt(0);
+                if (_dataCache.TryGetValue(evictCoord, out var oldCached))
                 {
                     oldCached.Dispose();
-                    _dataCache.Remove(first);
+                    _dataCache.Remove(evictCoord);
                 }
             }
 
-            // Cache the data
             var cached = new ChunkManager.CachedChunkData();
             cached.CopyFrom(data);
             _dataCache[coord] = cached;
+            _dataCacheEvictionOrder.Add(coord);
             _cacheOpsThisFrame++;
         }
 
@@ -87,6 +86,7 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 cached.Dispose();
                 _dataCache.Remove(coord);
+                _dataCacheEvictionOrder.Remove(coord);
                 return false;
             }
 
@@ -115,7 +115,7 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 for (int i = 0; i < density.Length; i++)
                 {
-                    hash ^= (ulong)(density[i] * 0xFFFFFF);
+                    hash ^= (ulong)(uint)BitConverter.SingleToInt32Bits(density[i]);
                     hash *= 1099511628211ul;
                 }
             }
@@ -272,32 +272,26 @@ namespace TerraVoxel.Voxel.Streaming
 #endif
             }
 
-            while (_meshCache.Count > maxMeshCacheEntries && evictBudget-- > 0)
+            // One pass: collect evictable (RefCount==0), sort by size desc then LRU (frame asc), evict up to budget. O(n) + O(k log k) vs O(budget * n).
+            var evictCandidates = new List<(ulong hash, int vertexCount, int frame)>(_meshCache.Count);
+            foreach (var kvp in _meshCache)
             {
-                bool found = false;
-                ulong bestKey = 0;
-                int bestFrame = int.MaxValue;
-                int bestVertexCount = -1;
+                if (kvp.Value.RefCount > 0) continue;
+                int vc = kvp.Value.Mesh != null ? kvp.Value.Mesh.vertexCount : 0;
+                evictCandidates.Add((kvp.Key, vc, kvp.Value.LastUsedFrame));
+            }
+            evictCandidates.Sort((a, b) =>
+            {
+                int cmp = b.vertexCount.CompareTo(a.vertexCount);
+                if (cmp != 0) return cmp;
+                return a.frame.CompareTo(b.frame);
+            });
 
-                foreach (var kvp in _meshCache)
-                {
-                    if (kvp.Value.RefCount > 0) continue;
-                    int vertexCount = kvp.Value.Mesh != null ? kvp.Value.Mesh.vertexCount : 0;
-                    // Prefer evicting largest meshes (size-based) to free more memory; then LRU
-                    bool better = !found ||
-                        vertexCount > bestVertexCount ||
-                        (vertexCount == bestVertexCount && kvp.Value.LastUsedFrame < bestFrame);
-                    if (better)
-                    {
-                        found = true;
-                        bestKey = kvp.Key;
-                        bestFrame = kvp.Value.LastUsedFrame;
-                        bestVertexCount = vertexCount;
-                    }
-                }
-
-                if (!found) break;
-                RemoveMeshCacheEntry(bestKey);
+            int evicted = 0;
+            for (int i = 0; i < evictCandidates.Count && _meshCache.Count > maxMeshCacheEntries && evicted < evictBudget; i++)
+            {
+                RemoveMeshCacheEntry(evictCandidates[i].hash);
+                evicted++;
             }
         }
 
@@ -306,11 +300,12 @@ namespace TerraVoxel.Voxel.Streaming
             if (_meshCache.TryGetValue(hash, out var entry))
             {
                 if (entry.Mesh != null)
-                    Object.Destroy(entry.Mesh);
+                    UnityEngine.Object.Destroy(entry.Mesh);
                 _meshCache.Remove(hash);
             }
         }
 
+        /// <summary>Releases face cache for coord. MeshData.Dispose checks Vertices, Triangles, Normals, Colors IsCreated.</summary>
         internal void ReleaseFaceCacheForChunk(ChunkCoord coord)
         {
             if (!_chunkFaceCache.TryGetValue(coord, out var arr)) return;

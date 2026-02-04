@@ -8,7 +8,7 @@ using UnityEngine;
 namespace TerraVoxel.Voxel.Meshing
 {
     /// <summary>
-    /// Greedy mesher running as a Burst job (single-threaded).
+    /// Greedy mesher running as a Burst job (single-threaded). Used only for CPU mesh path; when useGpuPipeline is true, ChunkManager.Jobs skips mesh jobs and GPU path uses GpuMesher instead.
     /// </summary>
     public static class GreedyMesher
     {

@@ -3,9 +3,10 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
-    /// <summary>Partial: neighbor invalidation, remesh queue, layer, TryGetChunk, RequestRemesh.</summary>
+    /// <summary>Partial: neighbor invalidation, remesh queue, layer, TryGetChunk, RequestRemesh. All access to _active, _genJobs, _remeshSet, etc. is main-thread only; no lock.</summary>
     public partial class ChunkManager
     {
+        /// <summary>Returns true if chunk at coord is active and not currently generating. Main-thread only.</summary>
         public bool TryGetChunk(ChunkCoord coord, out Chunk chunk)
         {
             if (!_active.TryGetValue(coord, out chunk)) return false;
@@ -18,6 +19,7 @@ namespace TerraVoxel.Voxel.Streaming
             return true;
         }
 
+        /// <summary>Enqueue coord for remesh and optionally neighbors. _requestRemeshDepth guards re-entrancy; bounded by maxRequestRemeshNeighborsDepth.</summary>
         public void RequestRemesh(ChunkCoord coord, bool includeNeighbors)
         {
             QueueRemesh(coord);
@@ -43,23 +45,35 @@ namespace TerraVoxel.Voxel.Streaming
             finally { _requestRemeshDepth--; }
         }
 
+        const int MaxLayerRecursionDepth = 32;
+
         void ApplyChunkLayer(Chunk chunk)
         {
             if (chunk == null) return;
             if (string.IsNullOrWhiteSpace(chunkLayerName)) return;
             int layer = LayerMask.NameToLayer(chunkLayerName);
-            if (layer < 0) return;
-            SetLayerRecursively(chunk.transform, layer);
+            if (layer < 0)
+            {
+                if (!_warnedInvalidChunkLayer)
+                {
+                    _warnedInvalidChunkLayer = true;
+                    Debug.LogWarning($"[ChunkManager] Chunk layer '{chunkLayerName}' not found. Create the layer in Tags and Layers or use a valid name.");
+                }
+                return;
+            }
+            SetLayerRecursively(chunk.transform, layer, 0);
         }
 
-        static void SetLayerRecursively(Transform t, int layer)
+        static void SetLayerRecursively(Transform t, int layer, int depth)
         {
             if (t == null) return;
+            if (depth > MaxLayerRecursionDepth) return;
             t.gameObject.layer = layer;
             for (int i = 0; i < t.childCount; i++)
-                SetLayerRecursively(t.GetChild(i), layer);
+                SetLayerRecursively(t.GetChild(i), layer, depth + 1);
         }
 
+        /// <summary>Rebuild neighbor invalidation/remesh. _rebuildNeighborsDepth guards re-entrancy; main-thread only.</summary>
         void RebuildNeighbors(ChunkCoord coord)
         {
             if (_rebuildNeighborsDepth >= maxRebuildNeighborsDepth) return;
@@ -73,7 +87,9 @@ namespace TerraVoxel.Voxel.Streaming
 
         void RebuildNeighborsInner(ChunkCoord coord)
         {
-            int columnChunks = worldGen != null ? worldGen.ColumnChunks : 4;
+            if (worldGen == null) return;
+            int columnChunks = worldGen.ColumnChunks;
+            if (columnChunks <= 0) return;
             var neighbors = new (ChunkCoord coord, int faceIndex)[]
             {
                 (new ChunkCoord(coord.X + 1, coord.Y, coord.Z), 0),
@@ -110,6 +126,7 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
+        /// <summary>Mark neighbor face for remesh. _faceRemeshSet and _faceRemeshQueue kept in sync (Set for Contains, Queue for FIFO). Main-thread only.</summary>
         void InvalidateNeighborFace(ChunkCoord neighbor, int faceIndex)
         {
             if (_meshJobs.ContainsKey(neighbor)) return;
@@ -136,23 +153,22 @@ namespace TerraVoxel.Voxel.Streaming
                 return;
             }
 
-            if (_active.TryGetValue(coord, out var chunk) && chunk.Data.IsCreated && !chunk.UsesSvo)
+            if (_active.TryGetValue(coord, out var chunk) && chunk != null && chunk.Data.IsCreated && !chunk.UsesSvo)
             {
                 int lodStep = Mathf.Max(1, chunk.LodStep);
                 if (lodStep == 1 && _chunkMeshHashes.TryGetValue(coord, out ulong storedHash))
                 {
                     var neighbors = GatherNeighborCopies(coord);
-                    if (HasAllNeighbors(neighbors.Data))
+                    try
                     {
-                        ulong currentHash = ComputeMeshCacheHash(chunk.Data.Materials, chunk.Data.Size, neighbors, 1, chunk.Data.Density);
-                        neighbors.Dispose();
-                        if (currentHash == storedHash)
-                            return;
+                        if (HasAllNeighbors(neighbors.Data))
+                        {
+                            ulong currentHash = ComputeMeshCacheHash(chunk.Data.Materials, chunk.Data.Size, neighbors, 1, chunk.Data.Density);
+                            if (currentHash == storedHash)
+                                return;
+                        }
                     }
-                    else
-                    {
-                        neighbors.Dispose();
-                    }
+                    finally { neighbors.Dispose(); }
                 }
             }
 
@@ -167,18 +183,22 @@ namespace TerraVoxel.Voxel.Streaming
             if (enableMeshCache)
             {
                 ReleaseMeshCacheForChunk(coord);
+                int colChunks = worldGen != null ? worldGen.ColumnChunks : 1;
                 var n = new[] {
                     new ChunkCoord(coord.X + 1, coord.Y, coord.Z), new ChunkCoord(coord.X - 1, coord.Y, coord.Z),
                     new ChunkCoord(coord.X, coord.Y + 1, coord.Z), new ChunkCoord(coord.X, coord.Y - 1, coord.Z),
                     new ChunkCoord(coord.X, coord.Y, coord.Z + 1), new ChunkCoord(coord.X, coord.Y, coord.Z - 1)
                 };
                 for (int i = 0; i < 6; i++)
-                    ReleaseMeshCacheForChunk(n[i]);
+                {
+                    if (n[i].Y >= 0 && n[i].Y < colChunks)
+                        ReleaseMeshCacheForChunk(n[i]);
+                }
             }
             _remeshSet.Add(coord);
         }
 
-        /// <summary>Extract coord with minimum distance to center from _remeshSet (min-heap semantics).</summary>
+        /// <summary>Dequeue coord in _remeshSet with minimum XZ distance to center (Y ignored for remesh priority). O(n) over _remeshSet; for very large sets consider a min-heap. Main-thread only.</summary>
         bool TryDequeueClosestRemesh(ChunkCoord center, out ChunkCoord coord)
         {
             coord = default;

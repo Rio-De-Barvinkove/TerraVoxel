@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
-    /// <summary>Processes integration queue: applies completed mesh jobs to chunks, registers cache, queues remesh. Delegates to ChunkManager when no separate manager.</summary>
+    /// <summary>Processes integration queue: applies completed mesh jobs to chunks, registers cache, queues remesh. Main-thread only; per-frame limit via CurrentMaxIntegrationsPerFrame and maxIterations cap. Validates chunk/chunk.Data before use; wraps Complete/Dispose in try-catch to avoid unhandled exceptions.</summary>
     internal sealed class ChunkIntegrationManager
     {
         readonly ChunkManager.Context _ctx;
@@ -35,6 +35,7 @@ namespace TerraVoxel.Voxel.Streaming
         bool enablePreload => _ctx.EnablePreload;
         int loadRadius => _ctx.LoadRadius;
 
+        /// <summary>Returns true if any voxel in data has non-zero material (has solid).</summary>
         internal bool HasAnySolid(ChunkData data)
         {
             if (!data.Materials.IsCreated) return false;
@@ -53,6 +54,8 @@ namespace TerraVoxel.Voxel.Streaming
 
         internal void ProcessIntegrationQueue()
         {
+            if (_ctx == null) return;
+
             int integrationsThisFrame = 0;
             ChunkCoord center = default;
             int keepRadius = 0;
@@ -89,12 +92,11 @@ namespace TerraVoxel.Voxel.Streaming
                 _integrationSet.TryRemove(coord, out _);
 
                 // Skip stale entries (no longer active or out of range)
-                if (!_active.TryGetValue(coord, out var chunk))
+                if (!_active.TryGetValue(coord, out var chunk) || chunk == null)
                 {
-                    // Чанк видалено: dispose job
                     if (_pendingMeshJobs.TryGetValue(coord, out var job))
                     {
-                        job.Dispose();
+                        try { job.Dispose(); } catch (System.Exception e) { Debug.LogWarning($"[ChunkIntegrationManager] Dispose job for removed chunk {coord}: {e.Message}"); }
                         _pendingMeshJobs.Remove(coord);
                     }
                     _pendingCachedMeshes.Remove(coord);
@@ -102,10 +104,9 @@ namespace TerraVoxel.Voxel.Streaming
                 }
                 if (hasCenter && !_ctx.IsWithinKeepRadius(coord, center, keepRadius))
                 {
-                    // Out of range: dispose job
                     if (_pendingMeshJobs.TryGetValue(coord, out var job))
                     {
-                        job.Dispose();
+                        try { job.Dispose(); } catch (System.Exception e) { Debug.LogWarning($"[ChunkIntegrationManager] Dispose job out of range {coord}: {e.Message}"); }
                         _pendingMeshJobs.Remove(coord);
                     }
                     _pendingCachedMeshes.Remove(coord);
@@ -140,6 +141,11 @@ namespace TerraVoxel.Voxel.Streaming
                     }
                     
                     // Re-validate hash matches current chunk data (only when all neighbors present)
+                    if (!chunk.Data.IsCreated || !chunk.Data.Materials.IsCreated)
+                    {
+                        _pendingCachedMeshes.Remove(coord);
+                        continue;
+                    }
                     var currentNeighbors = _ctx.Jobs.GatherNeighborCopies(coord);
                     bool hashStillValid = false;
                     if (_ctx.HasAllNeighbors(currentNeighbors.Data))
@@ -197,7 +203,7 @@ namespace TerraVoxel.Voxel.Streaming
 
                 if (meshJob.Epoch != _ctx.StreamingEpoch)
                 {
-                    meshJob.Dispose();
+                    try { meshJob.Dispose(); } catch (System.Exception e) { Debug.LogWarning($"[ChunkIntegrationManager] Dispose stale job {coord}: {e.Message}"); }
                     _pendingMeshJobs.Remove(coord);
                     _ctx.QueueRemesh(coord);
                     continue;
@@ -205,19 +211,34 @@ namespace TerraVoxel.Voxel.Streaming
                 if (!meshJob.Handle.IsCompleted) continue;
                 _pendingMeshJobs.Remove(coord);
                 _pendingCachedMeshes.Remove(coord);
-                meshJob.Handle.Complete();
+
+                try
+                {
+                    meshJob.Handle.Complete();
+                }
+                catch (System.Exception e)
+                {
+                    Debug.LogWarning($"[ChunkIntegrationManager] Complete mesh job {coord}: {e.Message}");
+                    try { meshJob.Dispose(); } catch { /* ignore */ }
+                    _ctx.QueueRemesh(coord);
+                    continue;
+                }
+
+                if (!chunk.Data.IsCreated || !chunk.Data.Materials.IsCreated)
+                {
+                    try { meshJob.Dispose(); } catch { /* ignore */ }
+                    continue;
+                }
 
                 if (meshJob.MeshData.Vertices.Length == 0)
                 {
-                    meshJob.Dispose();
-                    // Empty chunk is valid: keep renderer/collider disabled
+                    try { meshJob.Dispose(); } catch { /* ignore */ }
                     if (!HasAnySolid(chunk.Data))
                     {
                         chunk.SetRendererEnabled(false);
                         chunk.SetColliderEnabled(false);
                         continue;
                     }
-                    // Non-empty but no mesh? queue remesh
                     _ctx.QueueRemesh(coord);
                     continue;
                 }
@@ -240,7 +261,7 @@ namespace TerraVoxel.Voxel.Streaming
                 Mesh checkMesh = chunk.GetRenderMesh();
                 if (checkMesh == null || checkMesh.vertexCount == 0)
                 {
-                    meshJob.Dispose();
+                    try { meshJob.Dispose(); } catch { /* ignore */ }
                     if (HasAnySolid(chunk.Data))
                         _ctx.QueueRemesh(coord);
                     else
@@ -268,7 +289,7 @@ namespace TerraVoxel.Voxel.Streaming
                     _ctx.WaitingSafeSpawnMesh = false;
                 }
 
-                meshJob.Dispose();
+                try { meshJob.Dispose(); } catch (System.Exception e) { Debug.LogWarning($"[ChunkIntegrationManager] Dispose after apply {coord}: {e.Message}"); }
                 if (_ctx.RemeshAfterIntegration.Remove(coord))
                     _ctx.QueueRemesh(coord);
 

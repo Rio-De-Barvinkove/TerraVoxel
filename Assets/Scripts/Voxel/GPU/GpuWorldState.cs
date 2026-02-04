@@ -161,7 +161,7 @@ namespace TerraVoxel.Voxel.GPU
             return _descriptorStaging[slot];
         }
 
-        /// <summary>Update descriptor staging and upload single slot to GPU.</summary>
+        /// <summary>Update descriptor staging and upload single slot to GPU. Only MeshOffset, VertexCount, Flags are written; Coord and SlotGeneration are preserved from AllocateChunk.</summary>
         public void UpdateDescriptor(int slot, uint meshOffset, uint vertexCount, uint flags)
         {
             if (slot < 0 || slot >= _maxChunks) return;
@@ -169,8 +169,22 @@ namespace TerraVoxel.Voxel.GPU
             d.MeshOffset = meshOffset;
             d.VertexCount = vertexCount;
             d.Flags = flags;
+#if UNITY_EDITOR
+            ValidateDescriptor(slot, ref d);
+#endif
             ChunkDescriptors.SetData(_descriptorStaging, slot, slot, 1);
         }
+
+#if UNITY_EDITOR
+        static void ValidateDescriptor(int slot, ref GpuChunkDescriptor d)
+        {
+            if (d.VertexCount == 0) return;
+            // Coord (0,0,0) with geometry may indicate overwritten descriptor; only origin chunk should have coord 0,0,0.
+            if (d.CoordX == 0 && d.CoordY == 0 && d.CoordZ == 0)
+                Debug.LogWarning($"[GpuWorldState] Slot {slot} has coord (0,0,0) but VertexCount={d.VertexCount}");
+            // SlotGeneration 0 is valid: allocator initializes all slots to 0; generation increments only on Free.
+        }
+#endif
 
         /// <summary>Set descriptor flags only (e.g. after analysis).</summary>
         public void SetDescriptorFlags(int slot, uint flags)

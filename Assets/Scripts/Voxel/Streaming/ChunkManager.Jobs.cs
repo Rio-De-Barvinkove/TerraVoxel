@@ -1,5 +1,6 @@
 // Job-related partial: gen/mesh/face jobs, scheduling, neighbor copies, downsampling, material settings, remesh queues.
 
+using System;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
@@ -14,27 +15,37 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
-    /// <summary>Partial: CompleteAllJobs, ProcessGenJobs, ProcessMeshJobs, ScheduleGenJob, ScheduleMeshForChunk, GatherNeighbor*, DownsampleMaterials, GetMeshMaterialSettings, ProcessFaceRemesh*, ProcessRemeshQueue.</summary>
+    /// <summary>Partial: gen/mesh/face jobs, scheduling, GatherNeighbor*, DownsampleMaterials, ProcessRemeshQueue. Main-thread only. Complete/Dispose wrapped in try-catch per job so one failure does not block the rest.</summary>
     public partial class ChunkManager
     {
         internal void CompleteAllJobs()
         {
             foreach (var kvp in _genJobs)
             {
-                var job = kvp.Value.Job;
-                job.Handle.Complete();
-                job.Dispose();
+                try
+                {
+                    kvp.Value.Job.Handle.Complete();
+                    kvp.Value.Job.Dispose();
+                }
+                catch (Exception e) { Debug.LogWarning($"[ChunkManager] CompleteAllJobs gen {kvp.Key}: {e.Message}"); }
             }
             foreach (var kvp in _meshJobs)
             {
-                var job = kvp.Value.Job;
-                job.Handle.Complete();
-                job.Dispose();
+                try
+                {
+                    kvp.Value.Job.Handle.Complete();
+                    kvp.Value.Job.Dispose();
+                }
+                catch (Exception e) { Debug.LogWarning($"[ChunkManager] CompleteAllJobs mesh {kvp.Key}: {e.Message}"); }
             }
             foreach (var kvp in _faceMeshJobs)
             {
-                kvp.Value.Job.Handle.Complete();
-                kvp.Value.Job.Dispose();
+                try
+                {
+                    kvp.Value.Job.Handle.Complete();
+                    kvp.Value.Job.Dispose();
+                }
+                catch (Exception e) { Debug.LogWarning($"[ChunkManager] CompleteAllJobs face {kvp.Key}: {e.Message}"); }
             }
             _genJobs.Clear();
             _meshJobs.Clear();
@@ -43,11 +54,11 @@ namespace TerraVoxel.Voxel.Streaming
             _meshCompleted.Clear();
         }
 
-        /// <summary>Completes finished gen jobs on main thread; applies safe spawn, delta, schedules mesh. Exceptions in Complete() or subsequent logic are not caught.</summary>
+        /// <summary>Completes finished gen jobs on main thread; applies safe spawn, delta, schedules mesh. Complete/Dispose wrapped in try-catch per coord.</summary>
         internal void ProcessGenJobs()
         {
             if (useGpuPipeline) return;
-            if (_genJobs.Count == 0) return;
+            if (worldGen == null || _genJobs.Count == 0) return;
             _genCompleted.Clear();
             foreach (var kvp in _genJobs)
             {
@@ -71,15 +82,25 @@ namespace TerraVoxel.Voxel.Streaming
                 if (!_genJobs.TryGetValue(coord, out var task)) continue;
                 if (task.Epoch != _streamingEpoch && hasCenter && !IsWithinKeepRadius(coord, center, keepRadius))
                 {
-                    task.Job.Handle.Complete();
-                    task.Job.Dispose();
+                    try { task.Job.Handle.Complete(); task.Job.Dispose(); } catch (Exception e) { Debug.LogWarning($"[ChunkManager] ProcessGenJobs dispose stale {coord}: {e.Message}"); }
                     _genJobs.Remove(coord);
                     if (_active.ContainsKey(coord))
                         QueueRemoval(coord);
                     continue;
                 }
-                task.Job.Handle.Complete();
-                task.Job.Dispose();
+                try
+                {
+                    task.Job.Handle.Complete();
+                    task.Job.Dispose();
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[ChunkManager] ProcessGenJobs Complete/Dispose {coord}: {e.Message}");
+                    _genJobs.Remove(coord);
+                    if (_active.ContainsKey(coord))
+                        QueueRemoval(coord);
+                    continue;
+                }
 
                 if (task.UseSlices && task.SliceIndex + 1 < task.SliceCount)
                 {
@@ -106,7 +127,9 @@ namespace TerraVoxel.Voxel.Streaming
 
                 _genJobs.Remove(coord);
 
-                if (!_active.TryGetValue(coord, out var chunk) || chunk != task.Chunk)
+                if (!_active.TryGetValue(coord, out var chunk) || chunk == null || chunk != task.Chunk)
+                    continue;
+                if (!chunk.Data.IsCreated)
                     continue;
 
                 _lastGenMs = (long)((Time.realtimeSinceStartupAsDouble - task.StartTime) * 1000.0);
@@ -180,11 +203,11 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
-        /// <summary>Completes finished mesh jobs on main thread; queues integration. Exceptions in Complete() or subsequent logic are not caught.</summary>
+        /// <summary>Completes finished mesh jobs on main thread; queues integration. Complete/Dispose wrapped in try-catch per coord.</summary>
         internal void ProcessMeshJobs()
         {
             if (useGpuPipeline) return;
-            if (_meshJobs.Count == 0) return;
+            if (worldGen == null || _meshJobs.Count == 0) return;
             _meshCompleted.Clear();
             foreach (var kvp in _meshJobs)
             {
@@ -208,19 +231,25 @@ namespace TerraVoxel.Voxel.Streaming
                 if (!_meshJobs.TryGetValue(coord, out var task)) continue;
                 if (task.Job.Epoch != _streamingEpoch && hasCenter && !IsWithinKeepRadius(coord, center, keepRadius))
                 {
-                    task.Job.Handle.Complete();
-                    task.Job.Dispose();
+                    try { task.Job.Handle.Complete(); task.Job.Dispose(); } catch (Exception e) { Debug.LogWarning($"[ChunkManager] ProcessMeshJobs dispose stale {coord}: {e.Message}"); }
                     _meshJobs.Remove(coord);
                     if (_active.ContainsKey(coord))
                         QueueRemoval(coord);
                     continue;
                 }
-                task.Job.Handle.Complete();
+                try { task.Job.Handle.Complete(); }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[ChunkManager] ProcessMeshJobs Complete {coord}: {e.Message}");
+                    try { task.Job.Dispose(); } catch { /* ignore */ }
+                    _meshJobs.Remove(coord);
+                    continue;
+                }
                 _meshJobs.Remove(coord);
 
-                if (!_active.TryGetValue(coord, out var chunk) || chunk != task.Chunk)
+                if (!_active.TryGetValue(coord, out var chunk) || chunk == null || chunk != task.Chunk)
                 {
-                    task.Job.Dispose();
+                    try { task.Job.Dispose(); } catch { /* ignore */ }
                     continue;
                 }
 
@@ -559,16 +588,19 @@ namespace TerraVoxel.Voxel.Streaming
             return buffers;
         }
 
+        /// <summary>Downsamples source voxel buffer by lodStep (integer division). Writes one voxel per lodStep^3 block (first non-zero material). dest must be at least (srcSize/lodStep)^3 elements; no-op if dest too small or invalid. Caller must Dispose dest.</summary>
         internal void DownsampleMaterials(NativeArray<ushort> source, int srcSize, int lodStep, NativeArray<ushort> dest)
         {
             if (!source.IsCreated || source.Length == 0 || lodStep <= 1)
             {
-                if (source.IsCreated && dest.Length == source.Length)
+                if (source.IsCreated && dest.IsCreated && dest.Length == source.Length)
                     NativeArray<ushort>.Copy(source, dest);
                 return;
             }
 
             int lodSize = srcSize / lodStep;
+            if (lodSize <= 0 || !dest.IsCreated || dest.Length < lodSize * lodSize * lodSize)
+                return;
             for (int z = 0; z < lodSize; z++)
             {
                 int sz = z * lodStep;

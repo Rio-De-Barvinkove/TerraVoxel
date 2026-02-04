@@ -5,7 +5,7 @@ using UnityEngine.Rendering;
 namespace TerraVoxel.Voxel.Meshing
 {
     /// <summary>
-    /// Copies MeshData into a Unity Mesh using NativeArray views.
+    /// Copies MeshData into a Unity Mesh using NativeArray views. Used only for CPU mesh path (Chunk.ApplyMesh, SvoMeshBuilder); GPU path uses GpuMesher + VoxelMeshing.compute.
     /// </summary>
     public static class MeshBuilder
     {

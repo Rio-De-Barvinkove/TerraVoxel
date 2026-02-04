@@ -21,6 +21,11 @@ namespace TerraVoxel.Voxel.Core
 
         public void Allocate(int size, Allocator allocator, bool allocateDensity = true)
         {
+            if (size <= 0)
+            {
+                UnityEngine.Debug.LogError("[ChunkData] Allocate: size must be > 0 (got " + size + "). Skipping allocation.");
+                return;
+            }
             GpuSlot = -1;
             GpuOffset = -1;
             if (Materials.IsCreated) Materials.Dispose();
@@ -34,13 +39,30 @@ namespace TerraVoxel.Voxel.Core
                 Density = default;
         }
 
+        /// <summary>Call after Allocate or load; logs warning if Size != expectedSize (e.g. worldGen.ChunkSize).</summary>
+        public void ValidateSize(int expectedSize)
+        {
+            if (Size != expectedSize)
+                UnityEngine.Debug.LogWarning("[ChunkData] Size mismatch: Size=" + Size + " expected=" + expectedSize + ". Index/InBounds may be wrong.");
+        }
+
         public void Dispose()
         {
             if (Materials.IsCreated) Materials.Dispose();
             if (Density.IsCreated) Density.Dispose();
         }
 
-        public int Index(int x, int y, int z) => x + Size * (y + Size * z);
+        public int Index(int x, int y, int z)
+        {
+            if (!InBounds(x, y, z))
+            {
+#if UNITY_EDITOR
+                UnityEngine.Debug.LogWarning("[ChunkData] Index out of bounds: (" + x + "," + y + "," + z + ") Size=" + Size);
+#endif
+                return 0;
+            }
+            return x + Size * (y + Size * z);
+        }
 
         public bool InBounds(int x, int y, int z)
         {

@@ -14,6 +14,7 @@ namespace TerraVoxel.Voxel.GPU
         int _kernelWriteDrawArgs;
         int _kernelGenerateHiZ;
         readonly uint[] _clearCount = new uint[] { 0 };
+        static readonly uint[] _syncVisibleCount = new uint[1];
         const string KernelFrustumCull = "FrustumCull";
         const string KernelOcclusionCull = "OcclusionCull";
         const string KernelBuildDrawCommands = "BuildDrawCommands";
@@ -32,8 +33,8 @@ namespace TerraVoxel.Voxel.GPU
             _kernelGenerateHiZ = _shader != null ? _shader.FindKernel(KernelGenerateHiZ) : -1;
         }
 
-        /// <summary>Run frustum cull, optional Hi-Z occlusion, build draw commands. Pass chunkWorldSize in world units. If depthTexture and hiZMipTarget are set, runs GenerateHiZ then OcclusionCull.</summary>
-        public void Cull(GpuWorldState state, Camera camera, float chunkWorldSize, RenderTexture depthTexture = null, RenderTexture hiZMipTarget = null, float occlusionBias = 0.01f)
+        /// <summary>Run frustum cull, optional Hi-Z occlusion, build draw commands. Pass chunkWorldSize in world units. If depthTexture and hiZMipTarget are set, runs GenerateHiZ then OcclusionCull. frustumMarginOverride: when set, use this instead of chunkWorldSize*6 (use huge value to effectively disable frustum culling).</summary>
+        public void Cull(GpuWorldState state, Camera camera, float chunkWorldSize, RenderTexture depthTexture = null, RenderTexture hiZMipTarget = null, float occlusionBias = 0.01f, float? frustumMarginOverride = null, float frustumMarginScale = 6f)
         {
             if (!IsValid || state == null || camera == null) return;
 
@@ -51,6 +52,8 @@ namespace TerraVoxel.Voxel.GPU
             _shader.SetVectorArray("FrustumPlanes", planeVec);
             _shader.SetMatrix("ViewProjection", viewProj);
             _shader.SetFloat("ChunkWorldSize_", chunkWorldSize);
+            float frustumMargin = frustumMarginOverride ?? (chunkWorldSize * Mathf.Max(0f, frustumMarginScale));
+            _shader.SetFloat("FrustumMargin_", frustumMargin);
             _shader.SetInt("ChunkCount_", state.MaxChunks);
 
             int groupsFrustum = Mathf.CeilToInt(state.MaxChunks / 64f);
@@ -97,6 +100,9 @@ namespace TerraVoxel.Voxel.GPU
             _shader.SetBuffer(_kernelWriteDrawArgs, "VisibleCount", state.VisibleCountBuffer);
             _shader.SetInt("MaxVerticesPerInstance_", state.MaxVerticesPerChunk);
             _shader.Dispatch(_kernelWriteDrawArgs, 1, 1, 1);
+
+            // Sync so Render() / RecordDrawToCommandBuffer read correct VisibleCount (GPU may not have finished otherwise).
+            state.VisibleCountBuffer.GetData(_syncVisibleCount, 0, 0, 1);
         }
     }
 }

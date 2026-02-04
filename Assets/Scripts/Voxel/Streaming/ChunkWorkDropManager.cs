@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
@@ -6,13 +7,14 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
+    /// <summary>Drops work queues when player moves far or view/move angle changes. Main-thread only. Negative WorkDropDistance is treated as 0 (no distance-based drop).</summary>
     internal sealed class ChunkWorkDropManager
     {
         readonly ChunkManager.Context _ctx;
 
         public ChunkWorkDropManager(ChunkManager.Context ctx)
         {
-            _ctx = ctx;
+            _ctx = ctx ?? throw new ArgumentNullException(nameof(ctx));
         }
 
         int workDropDistance => _ctx.WorkDropDistance;
@@ -148,6 +150,8 @@ namespace TerraVoxel.Voxel.Streaming
             }
             _pending.Clear();
             _pendingSet.Clear();
+            if (viewCone != null && viewCone.Enabled)
+                viewCone.Clear();
             for (int i = 0; i < pendingKeep.Count; i++)
                 _pendingSet.Add(pendingKeep[i]);
             if (viewCone != null && viewCone.Enabled && _ctx.Player != null)

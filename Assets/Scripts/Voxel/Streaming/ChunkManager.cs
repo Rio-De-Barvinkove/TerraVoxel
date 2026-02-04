@@ -21,6 +21,7 @@ namespace TerraVoxel.Voxel.Streaming
     /// Facade: delegates to ChunkLoader, ChunkJobsManager, ChunkIntegrationManager, ChunkLodManager, ChunkCacheManager, ChunkAdaptiveLimitsManager, ChunkWorkDropManager, ChunkSafeSpawnManager, ChunkPhysicsManager when present; keeps full fallback implementations in this class.
     /// Intended to run on main thread (Update); job handles are only completed on main thread. All state is accessed from main thread only; no locking. If ever used from multiple threads, add synchronization.
     /// _pendingSet + _pending duplicate coords for O(1) membership; data/mesh caches use eviction (LRU-style). _emptyMaterials uses Allocator.Persistent and must be disposed (OnDestroy).
+    /// _integrationQueue/_integrationSet are main-thread only (Concurrent* used for TryAdd/TryRemove API); _active, _preloaded, _dataCache are main-thread only. Members _gpuWorldState, _gpuChunkGenerator, _gpuMesher, hybridSave, modManager, saveManager, worldGen, noiseStack, voxelMaterial are defined in this partial or assigned in Awake.
     /// </summary>
     public partial class ChunkManager : MonoBehaviour
     {
@@ -31,31 +32,31 @@ namespace TerraVoxel.Voxel.Streaming
         [Tooltip("Required for streaming. Chunk size, column height, noise. If null, no chunks spawn.")]
         [SerializeField] WorldGenConfig worldGen;
         [SerializeField] NoiseStack noiseStack;
-        [SerializeField] int loadRadius = 2;
-        [SerializeField] int unloadRadius = 3;
+        [SerializeField] [Range(1, 64)] int loadRadius = 2;
+        [SerializeField] [Range(1, 64)] int unloadRadius = 3;
         [Tooltip("Add colliders to chunks. GPU path uses BoxCollider per chunk; CPU path uses MeshCollider.")]
         [SerializeField] bool addColliders = true;
         [Header("Physics")]
         [SerializeField] ChunkPhysicsOptimizer physicsOptimizer;
-        [SerializeField] int maxSpawnsPerFrame = 1;
-        [SerializeField] int maxRemeshPerFrame = 10;
-        [SerializeField] int maxRemovalsPerFrame = 2;
+        [SerializeField] [Range(1, 32)] int maxSpawnsPerFrame = 1;
+        [SerializeField] [Range(1, 64)] int maxRemeshPerFrame = 10;
+        [SerializeField] [Range(1, 32)] int maxRemovalsPerFrame = 2;
         [Header("Threading / Multi-core")]
         [Tooltip("Gen + Mesh jobs run on worker threads (Burst). Integration/Remove must stay on main thread (Unity API).")]
         [SerializeField] bool scaleJobsByProcessorCount = true;
         [Tooltip("Max gen jobs in parallel. Used if scaleJobsByProcessorCount=false, else computed from processor count.")]
-        [SerializeField] int maxGenJobsInFlight = 2;
+        [SerializeField] [Range(1, 32)] int maxGenJobsInFlight = 2;
         [Tooltip("Max mesh jobs in parallel. Used if scaleJobsByProcessorCount=false, else computed from processor count.")]
-        [SerializeField] int maxMeshJobsInFlight = 2;
-        [SerializeField] int maxIntegrationsPerFrame = 10;
+        [SerializeField] [Range(1, 32)] int maxMeshJobsInFlight = 2;
+        [SerializeField] [Range(1, 64)] int maxIntegrationsPerFrame = 10;
         [SerializeField] bool dynamicIntegrationLimit = true;
-        [SerializeField] int maxIntegrationQueueSize = 2000;
+        [SerializeField] [Range(256, 16384)] int maxIntegrationQueueSize = 2000;
         [Header("Streaming Control")]
         [SerializeField] bool streamingPaused = false;
         [Header("Preload")]
         [SerializeField] bool enablePreload = false;
-        [SerializeField] int preloadRadius = 4;
-        [SerializeField] int maxPreloadsPerFrame = 1;
+        [SerializeField] [Range(0, 32)] int preloadRadius = 4;
+        [SerializeField] [Range(0, 16)] int maxPreloadsPerFrame = 1;
         [Header("Removal Budget")]
         [SerializeField] float removalBudgetMs = 0.75f;
         [Header("Work Dropping")]
@@ -100,7 +101,15 @@ namespace TerraVoxel.Voxel.Streaming
         [SerializeField] ComputeShader chunkCullingCompute;
         [SerializeField] ComputeShader voxelMeshingCompute;
         [SerializeField] GpuDrivenRenderer gpuDrivenRenderer;
-        [SerializeField] int gpuMaxChunks = 1024;
+        [Tooltip("Max GPU chunk slots. For Load Radius 20, Columns 4 need ~6724. Increase if pending stays high and warning appears.")]
+        [SerializeField] [Range(64, 16384)] int gpuMaxChunks = 8192;
+        [Header("GPU Debug")]
+        [Tooltip("When unchecked, frustum culling is effectively disabled (all meshed chunks drawn). Use to test if culling is the issue.")]
+        [SerializeField] bool gpuFrustumCulling = true;
+        [Tooltip("When Frustum Culling is on: margin = chunkWorldSize * this (0=strict, 6=default, 10+=wider).")]
+        [SerializeField] [Range(0f, 20f)] float gpuFrustumMarginScale = 6f;
+        [Tooltip("When unchecked, Hi-Z occlusion culling is skipped (no depth texture passed). Occlusion is off by default.")]
+        [SerializeField] bool gpuOcclusionCulling = false;
         [Header("SVO")]
         [SerializeField] SvoManager svoManager;
         [Header("Streaming Budget")]
@@ -160,6 +169,8 @@ namespace TerraVoxel.Voxel.Streaming
 
         readonly Dictionary<ChunkCoord, Chunk> _active = new Dictionary<ChunkCoord, Chunk>();
         readonly Dictionary<ChunkCoord, CachedChunkData> _dataCache = new Dictionary<ChunkCoord, CachedChunkData>();
+        /// <summary>FIFO/LRU eviction order for data cache; remove from front when evicting.</summary>
+        readonly List<ChunkCoord> _dataCacheEvictionOrder = new List<ChunkCoord>();
         int _cacheOpsThisFrame;
         readonly Queue<ChunkCoord> _pending = new Queue<ChunkCoord>();
         readonly HashSet<ChunkCoord> _pendingSet = new HashSet<ChunkCoord>();
@@ -188,6 +199,8 @@ namespace TerraVoxel.Voxel.Streaming
         readonly Dictionary<ChunkCoord, ulong> _chunkMeshHashes = new Dictionary<ChunkCoord, ulong>();
         /// <summary>Empty materials buffer for jobs; Allocator.Persistent, must be disposed in OnDestroy.</summary>
         NativeArray<ushort> _emptyMaterials;
+        /// <summary>Reusable upload buffer for GPU SetVoxels (load path); avoids per-chunk array allocation.</summary>
+        ushort[] _gpuUploadMaterials;
         readonly HashSet<ChunkCoord> _remeshAfterIntegration = new HashSet<ChunkCoord>();
         readonly Dictionary<ChunkCoord, int> _neighborDirtyFaces = new Dictionary<ChunkCoord, int>();
         readonly Dictionary<ChunkCoord, MeshData[]> _chunkFaceCache = new Dictionary<ChunkCoord, MeshData[]>();
@@ -237,7 +250,9 @@ namespace TerraVoxel.Voxel.Streaming
         static bool _warnedStreamingPaused;
         static bool _warnedGpuNotInitialized;
         static bool _warnedGpuSlotsFull;
+        static bool _warnedGpuCamNull;
         static bool _warnedColumnChunksZero;
+        static bool _warnedInvalidChunkLayer;
 
         bool _safeSpawnInitialized;
         int _safeSpawnWorldX0;
@@ -406,6 +421,8 @@ namespace TerraVoxel.Voxel.Streaming
 
         public int ActiveCount => _active.Count;
         public int PendingCount => (viewCone != null && viewCone.Enabled) ? viewCone.Count : _pendingSet.Count;
+        /// <summary>Raw pending set count; when viewCone enabled, use with PendingCount so loop runs if either has entries (recovery from out-of-sync).</summary>
+        public int PendingSetCount => _pendingSet.Count;
         public int SpawnedLastFrame => _spawnedLastFrame;
         public int IntegrationQueueCount => _integrationQueue.Count;
         public int IntegrationsLastFrame => _integrationsLastFrame;
@@ -498,7 +515,13 @@ namespace TerraVoxel.Voxel.Streaming
 
         void Awake()
         {
-            EnsurePrefab();
+            if (!EnsurePrefab() || chunkPrefab == null)
+            {
+                Debug.LogError("[ChunkManager] Awake: Chunk prefab is null. Assign chunkPrefab in Inspector or ensure EnsurePrefab can create one.");
+                return;
+            }
+            if (worldGen != null && worldGen.ChunkSize <= 0)
+                Debug.LogWarning("[ChunkManager] worldGen.ChunkSize must be > 0; division by zero may occur in position math. Fix WorldGenConfig.");
             _pool = new ChunkPool(chunkPrefab, transform);
             _pool.UseGpuPipeline = useGpuPipeline;
             _generator = new ChunkGenerator();
@@ -607,6 +630,16 @@ namespace TerraVoxel.Voxel.Streaming
                 }
                 return;
             }
+            if (_pool == null)
+            {
+                if (EnsurePrefab() && chunkPrefab != null)
+                {
+                    _pool = new ChunkPool(chunkPrefab, transform);
+                    _pool.UseGpuPipeline = useGpuPipeline;
+                    if (_generator == null) _generator = new ChunkGenerator();
+                }
+                if (_pool == null) return;
+            }
             if (chunkPrefab == null)
             {
                 EnsurePrefab();
@@ -699,13 +732,26 @@ namespace TerraVoxel.Voxel.Streaming
             if (useGpuPipeline && _gpuWorldState != null && gpuDrivenRenderer != null)
             {
                 Camera cam = Camera.main;
-                if (cam != null)
+                if (cam == null)
+                {
+                    if (!_warnedGpuCamNull)
+                    {
+                        _warnedGpuCamNull = true;
+                        Debug.LogWarning("[ChunkManager] Camera.main is null; GPU voxels are not drawn. Tag your scene camera as MainCamera.");
+                    }
+                }
+                else
                 {
                     if (_gpuCuller != null && _gpuCuller.IsValid && worldGen != null)
                     {
                         float chunkWorldSize = worldGen.ChunkSize * VoxelConstants.VoxelSize;
                         if (chunkWorldSize > 0f)
-                            _gpuCuller.Cull(_gpuWorldState, cam, chunkWorldSize);
+                        {
+                            float? frustumOverride = gpuFrustumCulling ? null : (float?)10000f;
+                            RenderTexture depthTex = gpuOcclusionCulling ? null : null;
+                            RenderTexture hiZTex = gpuOcclusionCulling ? null : null;
+                            _gpuCuller.Cull(_gpuWorldState, cam, chunkWorldSize, depthTex, hiZTex, 0.01f, frustumOverride, gpuFrustumMarginScale);
+                        }
                     }
                     gpuDrivenRenderer.Render(cam);
                 }
@@ -777,6 +823,8 @@ namespace TerraVoxel.Voxel.Streaming
             }
             _pending.Clear();
             _pendingSet.Clear();
+            if (viewCone != null && viewCone.Enabled)
+                viewCone.Clear();
             for (int i = 0; i < _dropPendingKeep.Count; i++)
                 _pendingSet.Add(_dropPendingKeep[i]);
             if (viewCone != null && viewCone.Enabled && player != null)

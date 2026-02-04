@@ -25,6 +25,7 @@ float3 CameraPosition_;
 uint ChunkCount_;
 uint ChunkSize_;
 float ChunkWorldSize_;
+float FrustumMargin_;  // expand frustum by this (world units) so chunks near edge are not culled
 uint MaxVerticesPerInstance_;
 
 #pragma kernel FrustumCull
@@ -33,7 +34,7 @@ uint MaxVerticesPerInstance_;
 #pragma kernel WriteDrawArgs
 #pragma kernel GenerateHiZ
 
-// Frustum test: AABB vs 6 planes
+// Frustum test: AABB vs 6 planes. FrustumMargin_ expands the frustum so chunks just outside are still drawn (reduces pop-in).
 bool AABBInFrustum(float3 center, float3 extent)
 {
     for (int i = 0; i < 6; i++)
@@ -42,7 +43,7 @@ bool AABBInFrustum(float3 center, float3 extent)
         float3 absNormal = abs(plane.xyz);
         float r = dot(extent, absNormal);
         float d = dot(center, plane.xyz) + plane.w;
-        if (d < -r)
+        if (d < -r - FrustumMargin_)
             return false;
     }
     return true;
@@ -57,6 +58,7 @@ void FrustumCull(uint id : SV_DispatchThreadID)
             VisibilityFlags[0] = 0;
         return;
     }
+    VisibilityFlags[id] = 0;
 
     CullChunkDesc desc = CullingChunkBuf[id];
     if (ExpectedGeneration[id] != desc.slotGeneration)

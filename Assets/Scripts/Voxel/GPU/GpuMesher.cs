@@ -16,6 +16,8 @@ namespace TerraVoxel.Voxel.GPU
         ComputeBuffer _faceCounter;
         readonly uint[] _faceCountReadback = new uint[1];
         int _maxFacesPerChunk;
+        static bool _warnedFaceBufferOverflow;
+        static bool _warnedVertexCap;
         const string KernelDetectFaces = "DetectFaces";
         const string KernelGenerateVertices = "GenerateVertices";
         const string KernelPadSlot = "PadSlot";
@@ -65,6 +67,11 @@ namespace TerraVoxel.Voxel.GPU
             uint faceCount = _faceCountReadback[0];
             if (faceCount == 0 || faceCount > (uint)_maxFacesPerChunk)
             {
+                if (faceCount > (uint)_maxFacesPerChunk && !_warnedFaceBufferOverflow)
+                {
+                    _warnedFaceBufferOverflow = true;
+                    Debug.LogWarning($"[GpuMesher] Face buffer overflow: faceCount={faceCount} > maxFacesPerChunk={_maxFacesPerChunk}. Chunk mesh dropped. Increase maxFacesPerChunk or reduce face density.");
+                }
                 state.UpdateDescriptor(slot, GpuChunkDescriptor.MeshOffsetNone, 0, desc.Flags);
                 return;
             }
@@ -72,7 +79,14 @@ namespace TerraVoxel.Voxel.GPU
             // DrawProceduralIndirect uses triangle list (no index buffer): 6 vertices per quad.
             uint maxFacesForSlot = (uint)(maxVerticesPerChunk / 6);
             if (faceCount > maxFacesForSlot)
+            {
+                if (!_warnedVertexCap)
+                {
+                    _warnedVertexCap = true;
+                    Debug.LogWarning($"[GpuMesher] Vertex cap hit: faceCount={faceCount} > maxFacesForSlot={maxFacesForSlot} (maxVerticesPerChunk={maxVerticesPerChunk}). Faces will be dropped; increase maxVerticesPerChunk or use greedy meshing.");
+                }
                 faceCount = maxFacesForSlot;
+            }
             uint vertexCount = faceCount * 6;
 
             _shader.SetBuffer(_kernelGenerateVertices, "FaceBuffer", _faceBuffer);

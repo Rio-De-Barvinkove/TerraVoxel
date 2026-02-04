@@ -1,16 +1,18 @@
+using System;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Meshing;
+using Unity.Collections;
 
 namespace TerraVoxel.Voxel.Streaming
 {
-    /// <summary>Delegates gen/mesh/face job processing and scheduling to ChunkManager. When UseGpuPipeline, ProcessGenJobs is a no-op on Owner.</summary>
+    /// <summary>Facade: delegates gen/mesh/face job processing and scheduling to ChunkManager (Owner). When UseGpuPipeline, ProcessGenJobs/ScheduleMesh are no-op on Owner. Main-thread only; no lock. Owner must implement all methods.</summary>
     internal sealed class ChunkJobsManager
     {
         readonly ChunkManager.Context _ctx;
 
         public ChunkJobsManager(ChunkManager.Context ctx)
         {
-            _ctx = ctx;
+            _ctx = ctx ?? throw new ArgumentNullException(nameof(ctx));
         }
 
         internal void ProcessGenJobs() => _ctx.Owner.ProcessGenJobs();
@@ -31,10 +33,15 @@ namespace TerraVoxel.Voxel.Streaming
         internal NeighborDataBuffers GatherNeighborCopies(ChunkCoord coord)
             => _ctx.Owner.GatherNeighborCopies(coord);
 
+        /// <summary>Owner must validate lodStep &gt; 0, srcSize &gt;= lodSize to avoid out-of-bounds. Returns default (empty buffers) if params invalid.</summary>
         internal NeighborDataBuffers GatherNeighborCopiesLod(ChunkCoord coord, int lodStep, int lodSize, int srcSize)
-            => _ctx.Owner.GatherNeighborCopiesLod(coord, lodStep, lodSize, srcSize);
+        {
+            if (lodStep <= 0 || lodSize <= 0 || srcSize < lodSize)
+                return default;
+            return _ctx.Owner.GatherNeighborCopiesLod(coord, lodStep, lodSize, srcSize);
+        }
 
-        internal void DownsampleMaterials(Unity.Collections.NativeArray<ushort> src, int srcSize, int lodStep, Unity.Collections.NativeArray<ushort> dst)
+        internal void DownsampleMaterials(NativeArray<ushort> src, int srcSize, int lodStep, NativeArray<ushort> dst)
             => _ctx.Owner.DownsampleMaterials(src, srcSize, lodStep, dst);
 
         internal void GetMeshMaterialSettings(Chunk chunk, out byte maxMaterialIndex, out byte fallbackMaterialIndex)

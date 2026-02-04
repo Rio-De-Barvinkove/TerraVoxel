@@ -17,6 +17,7 @@ namespace TerraVoxel.Voxel.Streaming
             if (_ctx.ScaleJobsByProcessorCount)
             {
                 int cores = Mathf.Max(1, SystemInfo.processorCount);
+                // Heuristic: cores/2 caps parallel jobs; Clamp(2,16) avoids over/under on hyper-threaded or many-core CPUs.
                 int perType = Mathf.Clamp(cores / 2, 2, 16);
                 _ctx.BaseMaxGenJobsInFlight = perType;
                 _ctx.BaseMaxMeshJobsInFlight = perType;
@@ -90,10 +91,11 @@ namespace TerraVoxel.Voxel.Streaming
 #endif
             }
 
+            // SystemInfo.graphicsMemorySize is total VRAM (MB), not used; Unity has no API for used VRAM. Throttle when total < threshold (low-end device).
             if (_ctx.GraphicsMemoryThresholdMb > 0 && SystemInfo.graphicsMemorySize > 0)
             {
                 long gpuMb = SystemInfo.graphicsMemorySize;
-                if (gpuMb > _ctx.GraphicsMemoryThresholdMb)
+                if (gpuMb < _ctx.GraphicsMemoryThresholdMb)
                 {
                     _ctx.RuntimeMaxMeshJobsInFlight = Mathf.Max(1, _ctx.BaseMaxMeshJobsInFlight / 2);
                     _ctx.RuntimeMaxIntegrationsPerFrame = Mathf.Max(1, _ctx.BaseMaxIntegrationsPerFrame / 2);

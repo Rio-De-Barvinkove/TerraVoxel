@@ -6,7 +6,9 @@ namespace TerraVoxel.Voxel.Streaming
 {
     /// <summary>
     /// Enables colliders only for chunks within a near radius around the player.
-    /// Uses hysteresis (inactiveRadius &gt; activeRadius) to avoid toggling at the boundary. No separate vertical hysteresis.
+    /// Uses hysteresis (inactiveRadius &gt; activeRadius): enable when inside activeRadius, disable only when beyond inactiveRadius. First Tick always runs full logic (_hasLastCenter false).
+    /// When includeVerticalDistance is false, Y is ignored so vertical distance does not affect enable/disable.
+    /// Main-thread only; iteration over ActiveChunks is not locked (ChunkManager is single-thread).
     /// </summary>
     [DisallowMultipleComponent]
     public class ChunkPhysicsOptimizer : MonoBehaviour
@@ -30,6 +32,7 @@ namespace TerraVoxel.Voxel.Streaming
         bool _hasLastCenter;
         bool _lastAddColliders;
         bool _wasEnabled;
+        bool _lastEnableOptimization;
         int _lastActiveRadius;
         int _lastInactiveRadius;
         bool _lastIncludeVertical;
@@ -47,19 +50,25 @@ namespace TerraVoxel.Voxel.Streaming
                 return;
             }
 
-            _wasEnabled = true;
-
             var player = manager.PlayerTransform;
             if (player == null) return;
 
             int chunkSize = manager.ChunkSize;
-            if (chunkSize <= 0) return;
+            if (chunkSize <= 0)
+            {
+                _wasEnabled = false;
+                if (_physicsActive.Count > 0) DisableAll(manager);
+                return;
+            }
+
+            _wasEnabled = true;
 
             int active = Mathf.Max(0, activeRadius);
             int inactive = Mathf.Max(active, inactiveRadius);
 
             bool addColliders = manager.AddColliders;
-            bool configChanged = _lastActiveRadius != active
+            bool configChanged = _lastEnableOptimization != enableOptimization
+                || _lastActiveRadius != active
                 || _lastInactiveRadius != inactive
                 || _lastIncludeVertical != includeVerticalDistance
                 || _lastDisablePreloaded != disablePreloaded;
@@ -117,6 +126,7 @@ namespace TerraVoxel.Voxel.Streaming
                     int dz = coord.Z - center.Z;
                     int dy = includeVerticalDistance ? coord.Y - center.Y : 0;
                     int distSq = dx * dx + dz * dz + dy * dy;
+                    // When includeVerticalDistance is false, Y is ignored; vertical chunks get colliders by horizontal distance only.
 
                     bool isActive = _physicsActive.Contains(coord);
                     bool shouldEnable = distSq <= activeSq || (distSq <= inactiveSq && isActive);
@@ -153,6 +163,7 @@ namespace TerraVoxel.Voxel.Streaming
 
         void UpdateConfigState(int active, int inactive, bool addColliders)
         {
+            _lastEnableOptimization = enableOptimization;
             _lastActiveRadius = active;
             _lastInactiveRadius = inactive;
             _lastIncludeVertical = includeVerticalDistance;
@@ -209,6 +220,8 @@ namespace TerraVoxel.Voxel.Streaming
             if (_physicsActive.Count == 0) return;
 
             _prune.Clear();
+            if (_prune.Capacity < _physicsActive.Count)
+                _prune.Capacity = _physicsActive.Count;
             foreach (var coord in _physicsActive)
             {
                 if (!_seen.Contains(coord))

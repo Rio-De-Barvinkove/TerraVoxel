@@ -1,11 +1,13 @@
+using System;
 using TerraVoxel.Voxel.Core;
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
-    /// <summary>Partial: removal queue processing, QueueRemoval, RemoveChunk.</summary>
+    /// <summary>Partial: removal queue processing, QueueRemoval, RemoveChunk. Main-thread only; no lock. RemoveChunk wrapped in try-catch in ProcessRemovalQueue so one failure does not block the queue.</summary>
     public partial class ChunkManager
     {
+        /// <summary>Processes removal queue up to maxRemovalsPerFrame and removalBudgetMs. Skips coords in keep radius or busy; calls RemoveChunk for each. Main-thread only.</summary>
         internal void ProcessRemovalQueue()
         {
             if (player == null || worldGen == null) return;
@@ -40,12 +42,20 @@ namespace TerraVoxel.Voxel.Streaming
                     continue;
                 }
 
-                RemoveChunk(coord);
+                try
+                {
+                    RemoveChunk(coord);
+                }
+                catch (Exception e)
+                {
+                    Debug.LogWarning($"[ChunkManager] RemoveChunk {coord}: {e.Message}");
+                }
                 _removeSet.Remove(coord);
                 count++;
             }
         }
 
+        /// <summary>Enqueues coord for removal if it is active and not already in remove set. Idempotent (set add).</summary>
         internal void QueueRemoval(ChunkCoord coord)
         {
             if (!_active.ContainsKey(coord)) return;
@@ -53,9 +63,10 @@ namespace TerraVoxel.Voxel.Streaming
                 _removeQueue.Enqueue(coord);
         }
 
+        /// <summary>Removes chunk from active set, enqueues save when hybridSave/saveManager, caches data when enableDataCache (CPU path), frees GPU slot when hybridSave is null (no save path), disposes data and mesh refs, returns chunk to pool. Main-thread only.</summary>
         internal void RemoveChunk(ChunkCoord coord)
         {
-            if (!_active.TryGetValue(coord, out var chunk)) return;
+            if (!_active.TryGetValue(coord, out var chunk) || chunk == null) return;
 
             int gpuSlot = -1;
             if (useGpuPipeline && _gpuWorldState != null)
@@ -66,10 +77,13 @@ namespace TerraVoxel.Voxel.Streaming
             _preloaded.Remove(coord);
             _preloadSet.Remove(coord);
 
-            // GPU slot is freed in HandleChunkUnloadedGpu's readback callback (EnqueueSaveFromGpu onReadbackEnqueued), not here.
             if (gpuSlot >= 0 && hybridSave != null)
             {
                 hybridSave.HandleChunkUnloadedGpu(coord, gpuSlot);
+            }
+            else if (gpuSlot >= 0 && _gpuWorldState != null)
+            {
+                _gpuWorldState.FreeChunk(coord);
             }
             else if (hybridSave != null)
             {
@@ -77,19 +91,22 @@ namespace TerraVoxel.Voxel.Streaming
             }
             else
             {
-                if (saveManager != null && saveManager.SaveOnUnload)
+                if (saveManager != null && saveManager.SaveOnUnload && chunk.Data.IsCreated)
                     saveManager.EnqueueSave(coord, chunk.Data);
                 if (modManager != null)
                     modManager.HandleChunkUnloaded(coord);
             }
 
-            // Cache chunk data in RAM before disposing (CPU path only)
             if (gpuSlot < 0 && enableDataCache && chunk.Data.IsCreated)
             {
                 CacheChunkData(coord, chunk.Data);
             }
 
-            if (chunk.Data.IsCreated) chunk.Data.Dispose();
+            if (chunk.Data.IsCreated)
+            {
+                try { chunk.Data.Dispose(); }
+                catch (Exception e) { Debug.LogWarning($"[ChunkManager] RemoveChunk Data.Dispose {coord}: {e.Message}"); }
+            }
             ReleaseMeshCacheForChunk(coord);
             ReleaseFaceCacheForChunk(coord);
             _neighborDirtyFaces.Remove(coord);
@@ -102,7 +119,7 @@ namespace TerraVoxel.Voxel.Streaming
             _integrationSet.TryRemove(coord, out _);
             if (_pendingMeshJobs.TryGetValue(coord, out var meshJob))
             {
-                meshJob.Dispose();
+                try { meshJob.Dispose(); } catch (Exception e) { Debug.LogWarning($"[ChunkManager] RemoveChunk meshJob.Dispose {coord}: {e.Message}"); }
                 _pendingMeshJobs.Remove(coord);
             }
 

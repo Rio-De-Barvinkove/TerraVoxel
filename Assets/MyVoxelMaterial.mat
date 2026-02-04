@@ -21,7 +21,7 @@ Material:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_Name: MyVoxelMaterial
-  m_Shader: {fileID: 4800000, guid: 029750088d0ec7a48a98987ff55fb6d3, type: 3}
+  m_Shader: {fileID: 4800000, guid: 989bcada823ffc848abf483d68a9a40c, type: 3}
   m_Parent: {fileID: 0}
   m_ModifiedSerializedProperties: 0
   m_ValidKeywords: []
