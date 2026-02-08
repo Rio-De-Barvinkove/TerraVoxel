@@ -73,8 +73,7 @@ void AnalyzeChunkFlags(uint id : SV_DispatchThreadID)
     ChunkDescriptor desc = ChunkDescriptors[id];
     if (ExpectedGeneration[id] != desc.slotGeneration)
         return;
-    if (desc.slotGeneration == 0)
-        return;
+    // slotGeneration 0 is valid (first allocation); do NOT skip it.
 
     uint solid = SolidCount[id];
     uint air = AirCount[id];
@@ -99,8 +98,7 @@ void DownsampleLOD(uint3 id : SV_DispatchThreadID)
     ChunkDescriptor desc = ChunkDescriptors[ChunkIndex_];
     if (ExpectedGeneration[ChunkIndex_] != desc.slotGeneration)
         return;
-    if (desc.slotGeneration == 0)
-        return;
+    // slotGeneration 0 is valid (first allocation); do NOT skip it.
     uint voxelOffset = desc.voxelOffset;
     uint count = 0;
     uint matSum = 0;

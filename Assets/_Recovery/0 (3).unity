@@ -380,8 +380,8 @@ MonoBehaviour:
   chunkPrefab: {fileID: 2085738739}
   worldGen: {fileID: 11400000, guid: 182e37385ea739840907a153355f5e7d, type: 2}
   noiseStack: {fileID: 11400000, guid: 7be5acb9b4187354ea266e68d3f3b281, type: 2}
-  loadRadius: 7
-  unloadRadius: 10
+  loadRadius: 32
+  unloadRadius: 35
   addColliders: 1
   physicsOptimizer: {fileID: 448214055}
   maxSpawnsPerFrame: 20
@@ -422,7 +422,7 @@ MonoBehaviour:
   chunkCullingCompute: {fileID: 7200000, guid: 0053e47e66c56ad499ad20082a6dbdcb, type: 3}
   voxelMeshingCompute: {fileID: 7200000, guid: 04709ffb7c7bd7343b32ebd369757d32, type: 3}
   gpuDrivenRenderer: {fileID: 448214060}
-  gpuMaxChunks: 1836
+  gpuMaxChunks: 12579
   gpuFrustumCulling: 0
   gpuFrustumMarginScale: 6
   gpuOcclusionCulling: 0

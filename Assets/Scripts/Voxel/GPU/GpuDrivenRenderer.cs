@@ -126,83 +126,11 @@ namespace TerraVoxel.Voxel.GPU
 
             if (drawViaRenderFeature)
             {
+                // RenderFeature handles the draw; skip here to avoid double draw.
                 if (!_warnedDrawViaFeature)
                 {
                     _warnedDrawViaFeature = true;
-                    Debug.LogWarning("[GpuDrivenRenderer] Draw Via Render Feature is on; this MonoBehaviour does not draw. Ensure GpuDrivenRenderFeature is on your URP Renderer (e.g. PC_Renderer); it will find this renderer automatically.");
-                    if (visibleCount > 0)
-                    {
-                        uint[] firstSlot = new uint[1];
-                        _worldState.VisibleChunkIndices.GetData(firstSlot, 0, 0, 1);
-                        var d = _worldState.GetDescriptor((int)firstSlot[0]);
-                        int sampleVisible = Mathf.Min(5, visibleCount);
-                        uint[] visibleSlots = new uint[sampleVisible];
-                        _worldState.VisibleChunkIndices.GetData(visibleSlots, 0, 0, sampleVisible);
-                        var coordList = new System.Text.StringBuilder();
-                        for (int i = 0; i < sampleVisible; i++)
-                        {
-                            var vd = _worldState.GetDescriptor((int)visibleSlots[i]);
-                            coordList.Append('(').Append(vd.Coord.X).Append(',').Append(vd.Coord.Y).Append(',').Append(vd.Coord.Z).Append(')');
-                            if (i < sampleVisible - 1) coordList.Append(", ");
-                        }
-                        int meshedCount = 0;
-                        for (int i = 0; i < _worldState.MaxChunks; i++)
-                        {
-                            var desc = _worldState.GetDescriptor(i);
-                            if (desc.VertexCount > 0 && (desc.Flags & ChunkDescriptorFlags.Empty) == 0)
-                                meshedCount++;
-                        }
-                        Debug.Log($"[GpuDrivenRenderer] VisibleCount={visibleCount}; ChunkCount={_worldState.ChunkCount}; GPU slots with mesh (VertexCount>0, not Empty)={meshedCount}; first visible coord=({d.Coord.X},{d.Coord.Y},{d.Coord.Z}); visible coords sample: {coordList}. If meshedCount is low, GpuMesher is the bottleneck; if meshedCount is high but VisibleCount low, check frustum/culling.");
-
-                        if (visibleCount < meshedCount && _worldState.ExpectedGenerationBuffer != null)
-                        {
-                            int checkSlots = Mathf.Min(_worldState.MaxChunks, 1024);
-                            uint[] expectedGen = new uint[checkSlots];
-                            _worldState.ExpectedGenerationBuffer.GetData(expectedGen, 0, 0, checkSlots);
-                            int genMismatch = 0;
-                            for (int i = 0; i < checkSlots; i++)
-                            {
-                                var desc = _worldState.GetDescriptor(i);
-                                if (desc.VertexCount > 0 && (desc.Flags & ChunkDescriptorFlags.Empty) == 0 && desc.SlotGeneration != expectedGen[i])
-                                    genMismatch++;
-                            }
-                            if (genMismatch > 0)
-                                Debug.LogWarning($"[GpuDrivenRenderer] ExpectedGeneration mismatch: {genMismatch} of {meshedCount} meshed slots (checked {checkSlots}) have descriptor.SlotGeneration != ExpectedGeneration on GPU. Those chunks are culled in FrustumCull. Ensure ExpectedGenerationBuffer is updated only at AllocateChunk/FreeChunk and descriptor uploads preserve SlotGeneration.");
-                            else
-                            {
-                                float chunkWorldSize = _worldState.ChunkSize * VoxelConstants.VoxelSize;
-                                if (camera != null && chunkWorldSize > 0.001f)
-                                {
-                                    var planes = GeometryUtility.CalculateFrustumPlanes(camera);
-                                    int cpuVisible = 0;
-                                    int sample = 0;
-                                    for (int i = 0; i < _worldState.MaxChunks && sample < 500; i++)
-                                    {
-                                        var desc = _worldState.GetDescriptor(i);
-                                        if (desc.VertexCount == 0 || (desc.Flags & ChunkDescriptorFlags.Empty) != 0) continue;
-                                        sample++;
-                                        float cx = desc.Coord.X * chunkWorldSize + chunkWorldSize * 0.5f;
-                                        float cy = desc.Coord.Y * chunkWorldSize + chunkWorldSize * 0.5f;
-                                        float cz = desc.Coord.Z * chunkWorldSize + chunkWorldSize * 0.5f;
-                                        var bounds = new Bounds(new Vector3(cx, cy, cz), new Vector3(chunkWorldSize, chunkWorldSize, chunkWorldSize));
-                                        if (GeometryUtility.TestPlanesAABB(planes, bounds))
-                                            cpuVisible++;
-                                    }
-                                    float camX = camera.transform.position.x, camY = camera.transform.position.y, camZ = camera.transform.position.z;
-                                    float visX = d.Coord.X * chunkWorldSize + chunkWorldSize * 0.5f;
-                                    float visY = d.Coord.Y * chunkWorldSize + chunkWorldSize * 0.5f;
-                                    float visZ = d.Coord.Z * chunkWorldSize + chunkWorldSize * 0.5f;
-                                    var inv = System.Globalization.CultureInfo.InvariantCulture;
-                                    float fov = camera.fieldOfView;
-                                    float near = camera.nearClipPlane;
-                                    float far = camera.farClipPlane;
-                                    Debug.Log($"[GpuDrivenRenderer] CPU frustum: only {cpuVisible} of {sample} chunks in view. Camera pos=({camX.ToString("F1", inv)},{camY.ToString("F1", inv)},{camZ.ToString("F1", inv)}) FOV={fov} near={near} far={far}; visible chunk center=({visX.ToString("F1", inv)},{visY.ToString("F1", inv)},{visZ.ToString("F1", inv)}). If FOV is very small or near is large, widen FOV (e.g. 60-90) and lower near clip so more chunks pass culling.");
-                                }
-                                else
-                                    Debug.Log($"[GpuDrivenRenderer] No ExpectedGeneration mismatch (checked {checkSlots}). Frustum or ChunkWorldSize_ may be wrong — verify GpuCuller receives correct camera and chunkWorldSize.");
-                            }
-                        }
-                    }
+                    Debug.LogWarning("[GpuDrivenRenderer] Draw Via Render Feature is on; MonoBehaviour skips draw. If Game view is empty: add GpuDrivenRenderFeature to URP Renderer (Tools > TerraVoxel > Add Gpu Driven Render Feature), or disable Draw Via Render Feature.");
                 }
                 return;
             }

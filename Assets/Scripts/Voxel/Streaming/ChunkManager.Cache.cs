@@ -9,7 +9,7 @@ namespace TerraVoxel.Voxel.Streaming
     /// <summary>Partial: data cache, mesh cache hash/register/release/evict, TryLoadFromCache, ReleaseFaceCacheForChunk.</summary>
     public partial class ChunkManager
     {
-        /// <summary>Cache chunk data. When _cache is set, delegates to ChunkCacheManager. Fallback uses _dataCacheEvictionOrder (FIFO). _cacheOpsThisFrame is reset each frame in Update.</summary>
+        /// <summary>Cache chunk data. When _cache is set, delegates to ChunkCacheManager. Fallback uses data cache eviction list (FIFO, O(1)). _cacheOpsThisFrame is reset each frame in Update.</summary>
         void CacheChunkData(ChunkCoord coord, ChunkData data)
         {
             if (_cache != null)
@@ -31,10 +31,8 @@ namespace TerraVoxel.Voxel.Streaming
 #endif
             }
 
-            while (_dataCache.Count >= cacheCap && _dataCacheEvictionOrder.Count > 0)
+            while (_dataCache.Count >= cacheCap && DataCacheEvictionTryDequeue(out var evictCoord))
             {
-                var evictCoord = _dataCacheEvictionOrder[0];
-                _dataCacheEvictionOrder.RemoveAt(0);
                 if (_dataCache.TryGetValue(evictCoord, out var oldCached))
                 {
                     oldCached.Dispose();
@@ -46,13 +44,13 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 existing.Dispose();
                 _dataCache.Remove(coord);
-                _dataCacheEvictionOrder.Remove(coord);
+                DataCacheEvictionRemove(coord);
             }
 
             var cached = new CachedChunkData();
             cached.CopyFrom(data);
             _dataCache[coord] = cached;
-            _dataCacheEvictionOrder.Add(coord);
+            DataCacheEvictionAdd(coord);
             _cacheOpsThisFrame++;
         }
 
@@ -301,7 +299,7 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 cached.Dispose();
                 _dataCache.Remove(coord);
-                _dataCacheEvictionOrder.Remove(coord);
+                DataCacheEvictionRemove(coord);
                 return false;
             }
 

@@ -144,6 +144,7 @@ namespace TerraVoxel.Voxel.Streaming
 
         void QueueRemesh(ChunkCoord coord)
         {
+            if (UseGpuPipeline) return;
             if (!_active.ContainsKey(coord)) return;
             if (_meshJobs.ContainsKey(coord)) return;
             if (_remeshSet.Contains(coord)) return;

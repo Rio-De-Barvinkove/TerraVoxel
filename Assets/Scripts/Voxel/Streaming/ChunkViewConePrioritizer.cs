@@ -174,6 +174,7 @@ namespace TerraVoxel.Voxel.Streaming
             _heap.RemoveAt(last);
             if (_heap.Count > 0)
                 HeapBubbleDown(0);
+            RemoveCoordFromMinHeap(coord);
             return true;
         }
 
@@ -188,7 +189,46 @@ namespace TerraVoxel.Voxel.Streaming
             _minHeap.RemoveAt(last);
             if (_minHeap.Count > 0)
                 MinHeapBubbleDown(0);
+            RemoveCoordFromHeap(coord);
             return true;
+        }
+
+        void RemoveCoordFromMinHeap(ChunkCoord coord)
+        {
+            for (int i = 0; i < _minHeap.Count; i++)
+            {
+                if (!_minHeap[i].Coord.Equals(coord)) continue;
+                int last = _minHeap.Count - 1;
+                if (i == last)
+                {
+                    _minHeap.RemoveAt(last);
+                    return;
+                }
+                _minHeap[i] = _minHeap[last];
+                _minHeap.RemoveAt(last);
+                MinHeapBubbleDown(i);
+                MinHeapBubbleUp(i);
+                return;
+            }
+        }
+
+        void RemoveCoordFromHeap(ChunkCoord coord)
+        {
+            for (int i = 0; i < _heap.Count; i++)
+            {
+                if (!_heap[i].Coord.Equals(coord)) continue;
+                int last = _heap.Count - 1;
+                if (i == last)
+                {
+                    _heap.RemoveAt(last);
+                    return;
+                }
+                _heap[i] = _heap[last];
+                _heap.RemoveAt(last);
+                HeapBubbleDown(i);
+                HeapBubbleUp(i);
+                return;
+            }
         }
 
         /// <summary>True if chunk is within the view cone from center. Forward/to normalized per call (no shared cache).</summary>

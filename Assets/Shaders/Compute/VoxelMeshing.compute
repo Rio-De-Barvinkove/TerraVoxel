@@ -40,13 +40,11 @@ void PackFace(uint faceIdx, int3 pos, uint face, uint mat, uint vertexBase)
     FaceBuffer[faceIdx * 2 + 1] = packed1;
 }
 
+// FaceCounter must be cleared to 0 on CPU (GpuMesher.MeshChunk) before dispatch.
+// Do NOT clear here — multiple groups would race and overwrite each other's counts.
 [numthreads(8, 8, 8)]
 void DetectFaces(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex)
 {
-    if (groupIndex == 0)
-        FaceCounter[0] = 0;
-    GroupMemoryBarrierWithGroupSync();
-
     if (any(id >= ChunkSize_))
         return;
 
@@ -137,12 +135,13 @@ void GenerateVertices(uint id : SV_DispatchThreadID)
     float3 v2 = GetFaceCorner(pos, face, 2);
     float3 v3 = GetFaceCorner(pos, face, 3);
 
+    // Winding: v0→v2→v1 and v0→v3→v2 so cross product matches FaceNormals (front-face = outside).
     MeshVertexBuffer[vertexBase + 0] = v0;
-    MeshVertexBuffer[vertexBase + 1] = v1;
-    MeshVertexBuffer[vertexBase + 2] = v2;
-    MeshVertexBuffer[vertexBase + 3] = v2;
+    MeshVertexBuffer[vertexBase + 1] = v2;
+    MeshVertexBuffer[vertexBase + 2] = v1;
+    MeshVertexBuffer[vertexBase + 3] = v0;
     MeshVertexBuffer[vertexBase + 4] = v3;
-    MeshVertexBuffer[vertexBase + 5] = v0;
+    MeshVertexBuffer[vertexBase + 5] = v2;
     MeshNormalBuffer[vertexBase + 0] = normal;
     MeshNormalBuffer[vertexBase + 1] = normal;
     MeshNormalBuffer[vertexBase + 2] = normal;

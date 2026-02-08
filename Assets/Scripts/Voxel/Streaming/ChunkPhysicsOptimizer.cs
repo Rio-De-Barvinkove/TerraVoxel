@@ -148,7 +148,16 @@ namespace TerraVoxel.Voxel.Streaming
                     }
 
                     if (chunk.IsGpuRendered)
-                        chunk.SetGpuBoxCollider(shouldEnable, chunkWorldSize);
+                    {
+                        // Only enable BoxCollider if chunk has geometry (vertexCount > 0); empty/air GPU chunks get no collider.
+                        bool hasGeometry = shouldEnable && chunk.Data.GpuSlot >= 0;
+                        if (hasGeometry && manager.GpuWorldState != null)
+                        {
+                            var desc = manager.GpuWorldState.GetDescriptor(chunk.Data.GpuSlot);
+                            hasGeometry = desc.VertexCount > 0;
+                        }
+                        chunk.SetGpuBoxCollider(shouldEnable && hasGeometry, chunkWorldSize);
+                    }
                     else
                         chunk.SetColliderEnabled(shouldEnable);
                     if (shouldEnable)
@@ -197,6 +206,7 @@ namespace TerraVoxel.Voxel.Streaming
             var activeChunks = manager.ActiveChunks;
             if (activeChunks == null) return;
             float chunkWorldSize = manager.ChunkSize * VoxelConstants.VoxelSize;
+            var gpuWorldState = manager.GpuWorldState;
             lock (_stateLock)
             {
                 foreach (var kvp in activeChunks)
@@ -204,7 +214,11 @@ namespace TerraVoxel.Voxel.Streaming
                     if (kvp.Value == null) continue;
                     if (disablePreloaded && manager.IsPreloaded(kvp.Key)) continue;
                     if (kvp.Value.IsGpuRendered)
-                        kvp.Value.SetGpuBoxCollider(true, chunkWorldSize);
+                    {
+                        bool hasGeometry = kvp.Value.Data.GpuSlot >= 0 && gpuWorldState != null
+                            && gpuWorldState.GetDescriptor(kvp.Value.Data.GpuSlot).VertexCount > 0;
+                        kvp.Value.SetGpuBoxCollider(hasGeometry, hasGeometry ? chunkWorldSize : 0f);
+                    }
                     else
                         kvp.Value.SetColliderEnabled(true);
                     _physicsActive.Add(kvp.Key);

@@ -145,8 +145,6 @@ namespace TerraVoxel.Voxel.Systems
             _active[_sampleIndex] = chunkManager != null ? chunkManager.ActiveCount : 0;
             _pending[_sampleIndex] = chunkManager != null ? chunkManager.PendingCount : 0;
             _spawned[_sampleIndex] = chunkManager != null ? chunkManager.SpawnedLastFrame : 0;
-            _sampleIndex = (_sampleIndex + 1) % graphSamples;
-            if (_sampleCount < graphSamples) _sampleCount++;
 
             if (cpuMs >= 0) _sumCpuMs += cpuMs;
             if (gpuMs >= 0) _sumGpuMs += gpuMs;
@@ -156,6 +154,9 @@ namespace TerraVoxel.Voxel.Systems
             _sumPending += _pending[_sampleIndex];
             _sumSpawned += _spawned[_sampleIndex];
             _sumCount++;
+
+            _sampleIndex = (_sampleIndex + 1) % graphSamples;
+            if (_sampleCount < graphSamples) _sampleCount++;
         }
 
         void LogSummary()

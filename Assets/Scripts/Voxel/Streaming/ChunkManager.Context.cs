@@ -139,7 +139,10 @@ namespace TerraVoxel.Voxel.Streaming
 
             internal Dictionary<ChunkCoord, Chunk> Active => _owner._active;
             internal Dictionary<ChunkCoord, CachedChunkData> DataCache => _owner._dataCache;
-            internal List<ChunkCoord> DataCacheEvictionOrder => _owner._dataCacheEvictionOrder;
+            internal void AddDataCacheEviction(ChunkCoord coord) => _owner.DataCacheEvictionAdd(coord);
+            internal bool TryDequeueDataCacheEviction(out ChunkCoord coord) => _owner.DataCacheEvictionTryDequeue(out coord);
+            internal void RemoveDataCacheEviction(ChunkCoord coord) => _owner.DataCacheEvictionRemove(coord);
+            internal int DataCacheEvictionCount => _owner.DataCacheEvictionCount;
             internal Queue<ChunkCoord> Pending => _owner._pending;
             internal HashSet<ChunkCoord> PendingSet => _owner._pendingSet;
             internal Queue<ChunkCoord> Preload => _owner._preload;

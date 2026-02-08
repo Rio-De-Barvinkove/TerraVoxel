@@ -169,8 +169,9 @@ namespace TerraVoxel.Voxel.Streaming
 
         readonly Dictionary<ChunkCoord, Chunk> _active = new Dictionary<ChunkCoord, Chunk>();
         readonly Dictionary<ChunkCoord, CachedChunkData> _dataCache = new Dictionary<ChunkCoord, CachedChunkData>();
-        /// <summary>FIFO/LRU eviction order for data cache; remove from front when evicting.</summary>
-        readonly List<ChunkCoord> _dataCacheEvictionOrder = new List<ChunkCoord>();
+        /// <summary>FIFO eviction order for data cache; O(1) dequeue from front and remove by coord.</summary>
+        readonly LinkedList<ChunkCoord> _dataCacheEvictionList = new LinkedList<ChunkCoord>();
+        readonly Dictionary<ChunkCoord, LinkedListNode<ChunkCoord>> _dataCacheEvictionNodes = new Dictionary<ChunkCoord, LinkedListNode<ChunkCoord>>();
         int _cacheOpsThisFrame;
         readonly Queue<ChunkCoord> _pending = new Queue<ChunkCoord>();
         readonly HashSet<ChunkCoord> _pendingSet = new HashSet<ChunkCoord>();
@@ -464,6 +465,39 @@ namespace TerraVoxel.Voxel.Streaming
             return _integrationSet.ContainsKey(coord);
         }
 
+        internal void DataCacheEvictionAdd(ChunkCoord coord)
+        {
+            if (_dataCacheEvictionNodes.TryGetValue(coord, out var node))
+            {
+                _dataCacheEvictionList.Remove(node);
+                _dataCacheEvictionNodes.Remove(coord);
+            }
+            var newNode = _dataCacheEvictionList.AddLast(coord);
+            _dataCacheEvictionNodes[coord] = newNode;
+        }
+
+        internal bool DataCacheEvictionTryDequeue(out ChunkCoord coord)
+        {
+            if (_dataCacheEvictionList.First == null)
+            {
+                coord = default;
+                return false;
+            }
+            coord = _dataCacheEvictionList.First.Value;
+            _dataCacheEvictionList.RemoveFirst();
+            _dataCacheEvictionNodes.Remove(coord);
+            return true;
+        }
+
+        internal void DataCacheEvictionRemove(ChunkCoord coord)
+        {
+            if (!_dataCacheEvictionNodes.TryGetValue(coord, out var node)) return;
+            _dataCacheEvictionList.Remove(node);
+            _dataCacheEvictionNodes.Remove(coord);
+        }
+
+        internal int DataCacheEvictionCount => _dataCacheEvictionList.Count;
+
         public void SetPlayer(Transform newPlayer)
         {
             player = newPlayer;
@@ -501,7 +535,11 @@ namespace TerraVoxel.Voxel.Streaming
                     continue;
                 }
                 if (chunk.IsGpuRendered)
-                    chunk.SetGpuBoxCollider(enabled, chunkWorldSize);
+                {
+                    bool hasGeometry = enabled && chunk.Data.GpuSlot >= 0 && _gpuWorldState != null
+                        && _gpuWorldState.GetDescriptor(chunk.Data.GpuSlot).VertexCount > 0;
+                    chunk.SetGpuBoxCollider(hasGeometry, hasGeometry ? chunkWorldSize : 0f);
+                }
                 else
                     chunk.SetColliderEnabled(enabled);
             }

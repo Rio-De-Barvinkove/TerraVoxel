@@ -118,6 +118,15 @@
 - [X] **VoxelTriplanarURP_Instanced:** instanceVertexID = vertexID % MaxVerticesPerInstance; cull при instanceVertexID >= desc.vertexCount.
 - [X] **ChunkCulling.compute:** FrustumCull — VisibilityFlags[id]=0 на початку для кожного id < ChunkCount_.
 
+**Поведінка GPU-пайплайну (useGpuPipeline = true):**
+- CPU-генерація і CPU-мешинг вимкнені: ChunkManager.Jobs — ProcessGenJobs/ProcessMeshJobs/ScheduleMeshForChunk/IsChunkGenerating повертають без роботи. Fallback немає.
+- Рендер лише через Camera.main; якщо null — GPU Cull/Render не викликаються (warning у консолі).
+- Culling тільки з ChunkManager.Update: GpuCuller.Cull викликається там же; ChunkOcclusionCuller при useGpu виходить одразу.
+- Chunk.ApplyGpuMeshRef вимикає MeshRenderer на чанку — візуал тільки через GpuDrivenRenderer. Колайдери — BoxCollider (SetGpuBoxCollider), незалежні від мешу.
+- Якщо Draw Via Render Feature увімкнено — малює GpuDrivenRenderFeature; інакше GpuDrivenRenderer.Render. Без Feature на URP Renderer при drawViaRenderFeature нічого не малюється.
+- VoxelMaterialBinder/SrpBatchingConfig не керують екраном у GPU-режимі — використовується instancedMaterial на GpuDrivenRenderer (TextureArray через ConfigureFromVoxelMaterial).
+- ChunkLodManager пропускає GPU-чанки з флагом Empty (не апгрейдить). ChunkPhysicsOptimizer вмикає/вимикає GPU BoxCollider по дистанції.
+
 ---
 
 ## Чеклист оптимізацій (загальний, не всі реалізовані)

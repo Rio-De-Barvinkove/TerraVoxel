@@ -55,6 +55,7 @@ namespace TerraVoxel.Voxel.Streaming
         internal void ProcessIntegrationQueue()
         {
             if (_ctx == null) return;
+            if (_ctx.UseGpuPipeline) return;
 
             int integrationsThisFrame = 0;
             ChunkCoord center = default;

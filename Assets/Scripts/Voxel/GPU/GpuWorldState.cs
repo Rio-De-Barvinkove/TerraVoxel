@@ -179,10 +179,8 @@ namespace TerraVoxel.Voxel.GPU
         static void ValidateDescriptor(int slot, ref GpuChunkDescriptor d)
         {
             if (d.VertexCount == 0) return;
-            // Coord (0,0,0) with geometry may indicate overwritten descriptor; only origin chunk should have coord 0,0,0.
-            if (d.CoordX == 0 && d.CoordY == 0 && d.CoordZ == 0)
-                Debug.LogWarning($"[GpuWorldState] Slot {slot} has coord (0,0,0) but VertexCount={d.VertexCount}");
             // SlotGeneration 0 is valid: allocator initializes all slots to 0; generation increments only on Free.
+            // Chunk at world origin (0,0,0) can be in any slot — no warning for coord (0,0,0).
         }
 #endif
 

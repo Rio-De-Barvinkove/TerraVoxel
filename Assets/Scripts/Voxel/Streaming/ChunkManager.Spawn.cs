@@ -33,7 +33,9 @@ namespace TerraVoxel.Voxel.Streaming
                 if (chunk.IsGpuRendered)
                 {
                     float chunkWorldSize = worldGen.ChunkSize * VoxelConstants.VoxelSize;
-                    chunk.SetGpuBoxCollider(true, chunkWorldSize);
+                    bool hasGeometry = chunk.Data.GpuSlot >= 0 && _gpuWorldState != null
+                        && _gpuWorldState.GetDescriptor(chunk.Data.GpuSlot).VertexCount > 0;
+                    chunk.SetGpuBoxCollider(hasGeometry, hasGeometry ? chunkWorldSize : 0f);
                 }
                 else
                     chunk.SetColliderEnabled(true);
@@ -224,6 +226,12 @@ namespace TerraVoxel.Voxel.Streaming
                     modManager.ApplyModsToGpu(coord, slot, _gpuWorldState);
                 }
 
+                // Apply safe spawn platform directly to GPU voxel buffer (CPU path is skipped when useGpuPipeline).
+                if (_safeSpawnInitialized && worldGen.EnableSafeSpawn && !loadedFromCache && !loadedSnapshot && !preload)
+                {
+                    ApplySafeSpawnToGpu(coord, slot);
+                }
+
                 if (_gpuMesher != null && _gpuMesher.IsValid)
                     _gpuMesher.MeshChunk(_gpuWorldState, slot);
 
@@ -231,9 +239,23 @@ namespace TerraVoxel.Voxel.Streaming
                 _active[coord] = chunk;
                 addedToActive = true;
                 chunk.ApplyGpuMeshRef(slot);
+
+                // Only add collider if chunk has geometry (vertexCount > 0); empty/air chunks get no collider.
                 if (addColliders)
                 {
-                    chunk.SetGpuBoxCollider(true, chunkWorldSize);
+                    var desc = _gpuWorldState.GetDescriptor(slot);
+                    if (desc.VertexCount > 0)
+                        chunk.SetGpuBoxCollider(true, chunkWorldSize);
+                    else
+                        chunk.SetGpuBoxCollider(false, 0f);
+                }
+
+                // GPU path does not use integration queue; clear safe-spawn wait when anchor chunk is spawned.
+                if (_waitingSafeSpawnMesh && coord.Equals(_safeSpawnAnchorCoord))
+                {
+                    _safeSpawn?.SnapPlayerToSafeSpawn();
+                    _safeSpawn?.SetPlayerFrozen(false);
+                    _waitingSafeSpawnMesh = false;
                 }
             }
             finally
@@ -249,6 +271,59 @@ namespace TerraVoxel.Voxel.Streaming
                     }
                 }
             }
+        }
+
+        /// <summary>Write safe-spawn platform voxels directly into the GPU VoxelMaterialBuffer for a given slot/coord. Single batch upload.</summary>
+        void ApplySafeSpawnToGpu(ChunkCoord coord, int slot)
+        {
+            if (worldGen == null || _gpuWorldState == null) return;
+            int chunkSize = worldGen.ChunkSize;
+            int worldX0 = coord.X * chunkSize;
+            int worldZ0 = coord.Z * chunkSize;
+            int worldX1 = worldX0 + chunkSize - 1;
+            int worldZ1 = worldZ0 + chunkSize - 1;
+            int worldY0 = coord.Y * chunkSize;
+            int worldY1 = worldY0 + chunkSize - 1;
+
+            int spawnX1 = _safeSpawnWorldX0 + _safeSpawnSizeVoxels - 1;
+            int spawnZ1 = _safeSpawnWorldZ0 + _safeSpawnSizeVoxels - 1;
+
+            if (worldX1 < _safeSpawnWorldX0 || worldX0 > spawnX1) return;
+            if (worldZ1 < _safeSpawnWorldZ0 || worldZ0 > spawnZ1) return;
+            if (worldY1 < _safeSpawnBaseY || worldY0 > _safeSpawnTopY) return;
+
+            int matIndex = worldGen.SafeSpawnMaterialIndex <= 0 ? 200 : Mathf.Clamp(worldGen.SafeSpawnMaterialIndex, 1, ushort.MaxValue);
+            uint matU = (uint)Mathf.Clamp(matIndex, 1, ushort.MaxValue);
+
+            int startX = Mathf.Max(worldX0, _safeSpawnWorldX0);
+            int endX = Mathf.Min(worldX1, spawnX1);
+            int startZ = Mathf.Max(worldZ0, _safeSpawnWorldZ0);
+            int endZ = Mathf.Min(worldZ1, spawnZ1);
+            int startY = Mathf.Max(worldY0, _safeSpawnBaseY);
+            int endY = Mathf.Min(worldY1, _safeSpawnTopY);
+
+            // Read entire slot from GPU, patch safe spawn region, re-upload once.
+            int voxelsPerChunk = chunkSize * chunkSize * chunkSize;
+            int voxelOffset = _gpuWorldState.GetVoxelOffset(slot);
+            uint[] voxels = new uint[voxelsPerChunk];
+            _gpuWorldState.VoxelMaterialBuffer.GetData(voxels, 0, voxelOffset, voxelsPerChunk);
+
+            for (int wx = startX; wx <= endX; wx++)
+            {
+                int lx = wx - worldX0;
+                for (int wz = startZ; wz <= endZ; wz++)
+                {
+                    int lz = wz - worldZ0;
+                    for (int wy = startY; wy <= endY; wy++)
+                    {
+                        int ly = wy - worldY0;
+                        int localIdx = lx + ly * chunkSize + lz * chunkSize * chunkSize;
+                        voxels[localIdx] = matU;
+                    }
+                }
+            }
+
+            _gpuWorldState.VoxelMaterialBuffer.SetData(voxels, 0, voxelOffset, voxelsPerChunk);
         }
     }
 }

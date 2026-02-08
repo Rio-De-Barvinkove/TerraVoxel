@@ -19,7 +19,6 @@ namespace TerraVoxel.Voxel.Streaming
         }
 
         Dictionary<ChunkCoord, ChunkManager.CachedChunkData> _dataCache => _ctx.DataCache;
-        List<ChunkCoord> _dataCacheEvictionOrder => _ctx.DataCacheEvictionOrder;
         Dictionary<ulong, ChunkManager.CachedMeshEntry> _meshCache => _ctx.MeshCache;
         Dictionary<ChunkCoord, ulong> _chunkMeshHashes => _ctx.ChunkMeshHashes;
         Dictionary<ChunkCoord, ChunkManager.PendingCachedMesh> _pendingCachedMeshes => _ctx.PendingCachedMeshes;
@@ -27,6 +26,8 @@ namespace TerraVoxel.Voxel.Streaming
         Dictionary<ChunkCoord, MeshData[]> _chunkFaceCache => _ctx.ChunkFaceCache;
         System.Collections.Concurrent.ConcurrentDictionary<ChunkCoord, byte> _integrationSet => _ctx.IntegrationSet;
         System.Collections.Concurrent.ConcurrentQueue<ChunkCoord> _integrationQueue => _ctx.IntegrationQueue;
+
+        List<(ulong hash, int vertexCount, int frame)> _evictCandidates = new List<(ulong, int, int)>();
 
         int _cacheOpsThisFrame { get => _ctx.CacheOpsThisFrame; set => _ctx.CacheOpsThisFrame = value; }
 
@@ -58,10 +59,8 @@ namespace TerraVoxel.Voxel.Streaming
             }
 
             // Evict in FIFO order (oldest first) using eviction list; O(1) per eviction.
-            while (_dataCache.Count >= cacheCap && _dataCacheEvictionOrder.Count > 0)
+            while (_dataCache.Count >= cacheCap && _ctx.TryDequeueDataCacheEviction(out var evictCoord))
             {
-                var evictCoord = _dataCacheEvictionOrder[0];
-                _dataCacheEvictionOrder.RemoveAt(0);
                 if (_dataCache.TryGetValue(evictCoord, out var oldCached))
                 {
                     oldCached.Dispose();
@@ -72,7 +71,7 @@ namespace TerraVoxel.Voxel.Streaming
             var cached = new ChunkManager.CachedChunkData();
             cached.CopyFrom(data);
             _dataCache[coord] = cached;
-            _dataCacheEvictionOrder.Add(coord);
+            _ctx.AddDataCacheEviction(coord);
             _cacheOpsThisFrame++;
         }
 
@@ -86,7 +85,7 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 cached.Dispose();
                 _dataCache.Remove(coord);
-                _dataCacheEvictionOrder.Remove(coord);
+                _ctx.RemoveDataCacheEviction(coord);
                 return false;
             }
 
@@ -273,14 +272,14 @@ namespace TerraVoxel.Voxel.Streaming
             }
 
             // One pass: collect evictable (RefCount==0), sort by size desc then LRU (frame asc), evict up to budget. O(n) + O(k log k) vs O(budget * n).
-            var evictCandidates = new List<(ulong hash, int vertexCount, int frame)>(_meshCache.Count);
+            _evictCandidates.Clear();
             foreach (var kvp in _meshCache)
             {
                 if (kvp.Value.RefCount > 0) continue;
                 int vc = kvp.Value.Mesh != null ? kvp.Value.Mesh.vertexCount : 0;
-                evictCandidates.Add((kvp.Key, vc, kvp.Value.LastUsedFrame));
+                _evictCandidates.Add((kvp.Key, vc, kvp.Value.LastUsedFrame));
             }
-            evictCandidates.Sort((a, b) =>
+            _evictCandidates.Sort((a, b) =>
             {
                 int cmp = b.vertexCount.CompareTo(a.vertexCount);
                 if (cmp != 0) return cmp;
@@ -288,9 +287,9 @@ namespace TerraVoxel.Voxel.Streaming
             });
 
             int evicted = 0;
-            for (int i = 0; i < evictCandidates.Count && _meshCache.Count > maxMeshCacheEntries && evicted < evictBudget; i++)
+            for (int i = 0; i < _evictCandidates.Count && _meshCache.Count > maxMeshCacheEntries && evicted < evictBudget; i++)
             {
-                RemoveMeshCacheEntry(evictCandidates[i].hash);
+                RemoveMeshCacheEntry(_evictCandidates[i].hash);
                 evicted++;
             }
         }

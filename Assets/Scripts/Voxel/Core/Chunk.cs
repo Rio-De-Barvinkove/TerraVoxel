@@ -81,14 +81,14 @@ namespace TerraVoxel.Voxel.Core
             if (_renderer != null) _renderer.enabled = false;
         }
 
-        /// <summary>Enable or disable BoxCollider for GPU path (no mesh on chunk; use box per chunk for collision).</summary>
+        /// <summary>Enable or disable BoxCollider for GPU path (no mesh on chunk; use box per chunk for collision). Chunk transform is at chunk center; box center (0,0,0) and size chunkWorldSize so world bounds match coord*chunkWorldSize..(coord+1)*chunkWorldSize.</summary>
         public void SetGpuBoxCollider(bool enabled, float chunkWorldSize)
         {
             if (enabled && chunkWorldSize > 0.001f)
             {
                 if (_boxCollider == null) _boxCollider = gameObject.GetComponent<BoxCollider>();
                 if (_boxCollider == null) _boxCollider = gameObject.AddComponent<BoxCollider>();
-                _boxCollider.center = new Vector3(chunkWorldSize * 0.5f, chunkWorldSize * 0.5f, chunkWorldSize * 0.5f);
+                _boxCollider.center = Vector3.zero;
                 _boxCollider.size = new Vector3(chunkWorldSize, chunkWorldSize, chunkWorldSize);
                 _boxCollider.enabled = true;
             }

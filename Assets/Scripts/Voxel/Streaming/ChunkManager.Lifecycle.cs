@@ -42,7 +42,7 @@ namespace TerraVoxel.Voxel.Streaming
                         if (_pendingSet.Contains(coord)) continue;
                         if (pendingQueueCap > 0 && PendingCount >= pendingQueueCap)
                             DropOnePendingOldest(center);
-                        if (viewCone != null && viewCone.Enabled)
+                        if (viewCone != null && viewCone.Enabled && !UseGpuPipeline)
                         {
                             if (_pendingSet.Add(coord))
                                 viewCone.EnqueueWithPriority(coord, center, player);
@@ -181,7 +181,7 @@ namespace TerraVoxel.Voxel.Streaming
                 {
                     if (!_active.ContainsKey(coord) && !_pendingSet.Contains(coord))
                     {
-                        if (viewCone != null && viewCone.Enabled)
+                        if (viewCone != null && viewCone.Enabled && !UseGpuPipeline)
                         {
                             if (_pendingSet.Add(coord))
                                 viewCone.EnqueueWithPriority(coord, center, player);
