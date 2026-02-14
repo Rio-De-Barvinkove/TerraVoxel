@@ -1,4 +1,5 @@
 using UnityEngine;
+using UnityEngine.Profiling;
 
 namespace TerraVoxel.Voxel.GPU
 {
@@ -14,7 +15,6 @@ namespace TerraVoxel.Voxel.GPU
         int _kernelWriteDrawArgs;
         int _kernelGenerateHiZ;
         readonly uint[] _clearCount = new uint[] { 0 };
-        static readonly uint[] _syncVisibleCount = new uint[1];
         const string KernelFrustumCull = "FrustumCull";
         const string KernelOcclusionCull = "OcclusionCull";
         const string KernelBuildDrawCommands = "BuildDrawCommands";
@@ -38,6 +38,7 @@ namespace TerraVoxel.Voxel.GPU
         {
             if (!IsValid || state == null || camera == null) return;
 
+            Profiler.BeginSample("GpuCuller.FrustumCull");
             Plane[] planes = GeometryUtility.CalculateFrustumPlanes(camera);
             Vector4[] planeVec = new Vector4[6];
             for (int i = 0; i < 6; i++)
@@ -58,6 +59,7 @@ namespace TerraVoxel.Voxel.GPU
 
             int groupsFrustum = Mathf.CeilToInt(state.MaxChunks / 64f);
             _shader.Dispatch(_kernelFrustumCull, Mathf.Max(1, groupsFrustum), 1, 1);
+            Profiler.EndSample();
 
             if (_kernelOcclusionCull >= 0 && _kernelGenerateHiZ >= 0 && depthTexture != null && hiZMipTarget != null)
             {
@@ -94,15 +96,15 @@ namespace TerraVoxel.Voxel.GPU
             _shader.SetInt("ChunkSize_", state.ChunkSize);
             _shader.SetInt("ChunkCount_", state.MaxChunks);
 
+            Profiler.BeginSample("GpuCuller.BuildDrawCommands");
             _shader.Dispatch(_kernelBuildDrawCommands, Mathf.Max(1, groupsFrustum), 1, 1);
 
             _shader.SetBuffer(_kernelWriteDrawArgs, "DrawArgs", state.DrawArgsBuffer);
             _shader.SetBuffer(_kernelWriteDrawArgs, "VisibleCount", state.VisibleCountBuffer);
             _shader.SetInt("MaxVerticesPerInstance_", state.MaxVerticesPerChunk);
             _shader.Dispatch(_kernelWriteDrawArgs, 1, 1, 1);
-
-            // Sync so Render() / RecordDrawToCommandBuffer read correct VisibleCount (GPU may not have finished otherwise).
-            state.VisibleCountBuffer.GetData(_syncVisibleCount, 0, 0, 1);
+            Profiler.EndSample();
+            // No GetData: DrawProceduralIndirect uses DrawArgsBuffer; when 0 instances it no-ops. Avoids CPU stall.
         }
     }
 }

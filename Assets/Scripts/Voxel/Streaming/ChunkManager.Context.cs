@@ -57,12 +57,19 @@ namespace TerraVoxel.Voxel.Streaming
 
             internal bool UseGpuPipeline => _owner.useGpuPipeline;
             internal int GpuMaxChunks => _owner.gpuMaxChunks;
+            internal int GpuWorldStateMaxChunks => _owner._gpuWorldState?.MaxChunks ?? _owner.gpuMaxChunks;
             internal GpuWorldState GpuWorldState => _owner._gpuWorldState;
             internal GpuChunkGenerator GpuChunkGenerator => _owner._gpuChunkGenerator;
             internal GpuMesher GpuMesher => _owner._gpuMesher;
             internal GpuCuller GpuCuller => _owner._gpuCuller;
             internal GpuReadbackManager GpuReadbackManager => _owner._gpuReadbackManager;
-            internal uint GetGpuChunkFlags(int slot) => _owner._gpuSlotFlags != null && _owner._gpuSlotFlags.TryGetValue(slot, out var f) ? f : 0;
+            internal uint GetGpuChunkFlags(int slot)
+            {
+                var state = _owner._gpuWorldState;
+                if (state == null || slot < 0 || slot >= state.MaxChunks) return 0;
+                var desc = state.GetDescriptor(slot);
+                return (desc.VertexCount == 0) ? ChunkDescriptorFlags.Empty : (desc.Flags & ~ChunkDescriptorFlags.Empty);
+            }
 
             internal int LoadRadius { get => _owner.loadRadius; set => _owner.loadRadius = value; }
             internal int UnloadRadius { get => _owner.unloadRadius; set => _owner.unloadRadius = value; }

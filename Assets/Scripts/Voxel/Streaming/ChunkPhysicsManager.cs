@@ -18,14 +18,13 @@ namespace TerraVoxel.Voxel.Streaming
         {
             _ctx.AddColliders = enabled;
             Dictionary<ChunkCoord, Chunk> active = _ctx.Active;
-            float chunkWorldSize = _ctx.Owner.ChunkSize * Core.VoxelConstants.VoxelSize;
             foreach (var chunk in active.Values)
             {
                 if (chunk == null) continue;
                 if (_ctx.Preloaded.Contains(chunk.Coord))
                 {
                     if (chunk.IsGpuRendered)
-                        chunk.SetGpuBoxCollider(false, 0f);
+                        chunk.SetGpuColliderEnabled(false);
                     else
                         chunk.SetColliderEnabled(enabled);
                     continue;
@@ -34,7 +33,7 @@ namespace TerraVoxel.Voxel.Streaming
                 {
                     bool hasGeometry = enabled && chunk.Data.GpuSlot >= 0 && _ctx.GpuWorldState != null
                         && _ctx.GpuWorldState.GetDescriptor(chunk.Data.GpuSlot).VertexCount > 0;
-                    chunk.SetGpuBoxCollider(hasGeometry, hasGeometry ? chunkWorldSize : 0f);
+                    chunk.SetGpuColliderEnabled(enabled && hasGeometry);
                 }
                 else
                     chunk.SetColliderEnabled(enabled);

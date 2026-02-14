@@ -1,6 +1,6 @@
 # ROADMAP 
 
-**Оновлено:** 4 лютого 2026
+**Оновлено:** 9 лютого 2026
 
 ---
 
@@ -117,15 +117,16 @@
 - [X] **GpuDrivenRenderer:** _MaxVerticesPerInstance у шейдер; debugLogDrawArgs; GpuDrivenRenderFeature + GpuDrivenRenderPass (URP RenderGraph, SetRenderAttachmentDepth).
 - [X] **VoxelTriplanarURP_Instanced:** instanceVertexID = vertexID % MaxVerticesPerInstance; cull при instanceVertexID >= desc.vertexCount.
 - [X] **ChunkCulling.compute:** FrustumCull — VisibilityFlags[id]=0 на початку для кожного id < ChunkCount_.
+- [X] **GPU Pipeline Optimization Refactor:** заміна sync GetData на AsyncGPUReadback для collider pipeline; GpuColliderReadbackQueue — RequestColliderAsync (FaceCounter одразу після MeshChunk) → callback UpdateDescriptor → vertex readback queue; ProcessQueue (maxColliderReadbacksPerFrame=2); GpuMesher без sync _faceCounter.GetData; BoxCollider fallback до готовності mesh; gpuMaxSpawnsPerFrame (5) для обмеження spawns.
 
 **Поведінка GPU-пайплайну (useGpuPipeline = true):**
 - CPU-генерація і CPU-мешинг вимкнені: ChunkManager.Jobs — ProcessGenJobs/ProcessMeshJobs/ScheduleMeshForChunk/IsChunkGenerating повертають без роботи. Fallback немає.
 - Рендер лише через Camera.main; якщо null — GPU Cull/Render не викликаються (warning у консолі).
 - Culling тільки з ChunkManager.Update: GpuCuller.Cull викликається там же; ChunkOcclusionCuller при useGpu виходить одразу.
-- Chunk.ApplyGpuMeshRef вимикає MeshRenderer на чанку — візуал тільки через GpuDrivenRenderer. Колайдери — BoxCollider (SetGpuBoxCollider), незалежні від мешу.
+- Chunk.ApplyGpuMeshRef вимикає MeshRenderer на чанку — візуал тільки через GpuDrivenRenderer. Колайдери — MeshCollider з async readback (GpuColliderReadbackQueue), BoxCollider як fallback до готовності mesh.
 - Якщо Draw Via Render Feature увімкнено — малює GpuDrivenRenderFeature; інакше GpuDrivenRenderer.Render. Без Feature на URP Renderer при drawViaRenderFeature нічого не малюється.
 - VoxelMaterialBinder/SrpBatchingConfig не керують екраном у GPU-режимі — використовується instancedMaterial на GpuDrivenRenderer (TextureArray через ConfigureFromVoxelMaterial).
-- ChunkLodManager пропускає GPU-чанки з флагом Empty (не апгрейдить). ChunkPhysicsOptimizer вмикає/вимикає GPU BoxCollider по дистанції.
+- ChunkLodManager пропускає GPU-чанки з флагом Empty (не апгрейдить). ChunkPhysicsOptimizer вмикає/вимикає GPU BoxCollider/MeshCollider по дистанції.
 
 ---
 
@@ -158,7 +159,7 @@
 32. GPU Meshing — **[X] реалізовано (VoxelMeshing.compute, GpuMesher)**
 33. GPU Culling — **[X] реалізовано (ChunkCulling.compute, GpuCuller)**
 34. GPU-driven Rendering — **[X] реалізовано (GpuDrivenRenderer, indirect draw)**
-36. Async GPU Readback Control — **[X] реалізовано (GpuReadbackManager, Save/Mod facade)**
+36. Async GPU Readback Control — **[X] реалізовано (GpuReadbackManager, Save/Mod facade; GpuColliderReadbackQueue — async FaceCounter + vertices для MeshCollider, maxColliderReadbacksPerFrame, BoxCollider fallback)**
 
 22. Static Batching - шось треба глянуть
 26. Virtual Texturing - будуще

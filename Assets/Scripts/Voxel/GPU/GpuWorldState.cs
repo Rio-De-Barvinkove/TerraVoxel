@@ -33,6 +33,8 @@ namespace TerraVoxel.Voxel.GPU
         public ComputeBuffer DrawArgsBuffer { get; private set; }
         /// <summary>Current generation per slot for use-after-free check in compute. Updated on Allocate/Free.</summary>
         public ComputeBuffer ExpectedGenerationBuffer { get; private set; }
+        /// <summary>Compact list of active slot indices [0..ChunkCount-1]. Updated before ScheduleAnalysis. Used by GpuChunkAnalyzer to process only active slots.</summary>
+        public ComputeBuffer ActiveSlotIndicesBuffer { get; private set; }
 
         public GpuSlotAllocator Allocator => _allocator;
         public int MaxChunks => _maxChunks;
@@ -42,13 +44,34 @@ namespace TerraVoxel.Voxel.GPU
         public int MaxIndicesPerChunk => _maxIndicesPerChunk;
         public int ChunkCount => _coordToSlot.Count;
 
+        /// <summary>Unity ComputeBuffer max size per buffer (2GB). Buffers exceeding this throw ArgumentException.</summary>
+        const long MaxComputeBufferBytes = 2147483648L;
+
+        /// <summary>Max chunk slots such that no buffer exceeds MaxComputeBufferBytes. MeshVertex/MeshNormal (stride 12) are typically the limit.</summary>
+        public static int ComputeMaxChunksWithinBufferLimit(int chunkSize, int maxVerticesPerChunk = 50000, int maxIndicesPerChunk = 75000)
+        {
+            int voxelsPerChunk = chunkSize * chunkSize * chunkSize;
+            long maxBytes = MaxComputeBufferBytes;
+
+            int byVoxel = (int)(maxBytes / (voxelsPerChunk * (long)sizeof(uint)));
+            int byVertex = (int)(maxBytes / (maxVerticesPerChunk * 12L));
+            int byIndex = (int)(maxBytes / (maxIndicesPerChunk * (long)sizeof(uint)));
+            return Mathf.Max(1, Mathf.Min(byVoxel, byVertex, byIndex));
+        }
+
         /// <summary>Create GPU World State. Buffers are allocated; use AllocateChunk/FreeChunk for slots.</summary>
-        /// <param name="maxChunks">Max chunk slots (e.g. 4096).</param>
+        /// <param name="maxChunks">Max chunk slots (e.g. 4096). Capped to stay under 2GB per buffer.</param>
         /// <param name="chunkSize">Voxels per axis (e.g. 32).</param>
         /// <param name="maxVerticesPerChunk">Max vertices per chunk mesh (e.g. 50000).</param>
         /// <param name="maxIndicesPerChunk">Max indices per chunk (e.g. 75000).</param>
         public GpuWorldState(int maxChunks, int chunkSize, int maxVerticesPerChunk = 50000, int maxIndicesPerChunk = 75000)
         {
+            int safeMax = ComputeMaxChunksWithinBufferLimit(chunkSize, maxVerticesPerChunk, maxIndicesPerChunk);
+            if (maxChunks > safeMax)
+            {
+                Debug.LogWarning($"[GpuWorldState] gpuMaxChunks {maxChunks} would exceed ComputeBuffer 2GB limit. Capped to {safeMax} (chunkSize={chunkSize}, maxVerticesPerChunk={maxVerticesPerChunk}).");
+                maxChunks = safeMax;
+            }
             _maxChunks = Mathf.Max(1, maxChunks);
             _chunkSize = Mathf.Max(1, chunkSize);
             _voxelsPerChunk = _chunkSize * _chunkSize * _chunkSize;
@@ -81,7 +104,24 @@ namespace TerraVoxel.Voxel.GPU
 
             ClearDescriptorStaging();
             ChunkDescriptors.SetData(_descriptorStaging);
+            ActiveSlotIndicesBuffer = new ComputeBuffer(_maxChunks, sizeof(uint));
         }
+
+        /// <summary>Upload active slot indices from _slotToCoord.Keys. Call before GpuChunkAnalyzer.ScheduleAnalysis so analyzer processes only active slots.</summary>
+        public void UpdateActiveSlotIndicesBuffer()
+        {
+            if (ActiveSlotIndicesBuffer == null || _slotToCoord.Count == 0) return;
+            if (_activeSlotIndicesStaging == null || _activeSlotIndicesStaging.Length < _maxChunks)
+                _activeSlotIndicesStaging = new uint[_maxChunks];
+            int i = 0;
+            foreach (var slot in _slotToCoord.Keys)
+            {
+                if (i >= _maxChunks) break;
+                _activeSlotIndicesStaging[i++] = (uint)slot;
+            }
+            ActiveSlotIndicesBuffer.SetData(_activeSlotIndicesStaging, 0, 0, i);
+        }
+        uint[] _activeSlotIndicesStaging;
 
         void ClearDescriptorStaging()
         {
@@ -255,6 +295,8 @@ namespace TerraVoxel.Voxel.GPU
             DrawArgsBuffer = null;
             ExpectedGenerationBuffer?.Release();
             ExpectedGenerationBuffer = null;
+            ActiveSlotIndicesBuffer?.Release();
+            ActiveSlotIndicesBuffer = null;
             _coordToSlot.Clear();
             _slotToCoord.Clear();
         }

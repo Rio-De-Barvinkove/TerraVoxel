@@ -80,7 +80,7 @@ namespace TerraVoxel.Voxel.Lod
                 {
                     chunk.SetRendererEnabled(false);
                     if (chunk.IsGpuRendered)
-                        chunk.SetGpuBoxCollider(false, 0f);
+                        chunk.SetGpuColliderEnabled(false);
                     else
                         chunk.SetColliderEnabled(false);
                     chunk.UsesSvo = false;
@@ -137,7 +137,7 @@ namespace TerraVoxel.Voxel.Lod
                 {
                     chunk.SetRendererEnabled(false);
                     if (chunk.IsGpuRendered)
-                        chunk.SetGpuBoxCollider(false, 0f);
+                        chunk.SetGpuColliderEnabled(false);
                     else
                         chunk.SetColliderEnabled(false);
                     chunk.UsesSvo = false;

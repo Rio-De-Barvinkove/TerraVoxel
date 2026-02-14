@@ -24,59 +24,63 @@ RWStructuredBuffer<uint> LodVoxelBuffer;
 StructuredBuffer<uint> ExpectedGeneration;
 RWStructuredBuffer<uint> SolidCount;
 RWStructuredBuffer<uint> AirCount;
+StructuredBuffer<uint> ActiveSlotIndices;
 uint ChunkSize_;
 uint VoxelsPerChunk_;
 uint ChunkCount_;
+uint ActiveCount_;
 uint ChunkIndex_;
 uint LodLevel_;
 uint VoxelStart_;
 
-// Clear SolidCount and AirCount before counting (one thread per chunk).
+// Clear SolidCount and AirCount for active slots only (one thread per active chunk).
 [numthreads(64, 1, 1)]
 void ClearCounts(uint id : SV_DispatchThreadID)
 {
-    if (id >= ChunkCount_)
+    if (id >= ActiveCount_)
         return;
-    SolidCount[id] = 0;
-    AirCount[id] = 0;
+    uint slotIndex = ActiveSlotIndices[id];
+    SolidCount[slotIndex] = 0;
+    AirCount[slotIndex] = 0;
 }
 
-// Count all voxels per chunk using global atomics. Full chunk coverage: one thread per voxel.
+// Count voxels for active slots only. globalThreadId maps to (activeChunkIndex, voxelIndexInChunk) -> slotIndex from ActiveSlotIndices.
 #define THREADS_PER_GROUP 512
 [numthreads(8, 8, 8)]
 void AnalyzeChunkCount(uint3 id : SV_DispatchThreadID, uint groupIndex : SV_GroupIndex, uint3 groupId : SV_GroupID)
 {
+    uint totalVoxels = ActiveCount_ * VoxelsPerChunk_;
     uint globalThreadId = VoxelStart_ + groupId.x * THREADS_PER_GROUP + groupIndex;
-    uint totalVoxels = ChunkCount_ * VoxelsPerChunk_;
     if (globalThreadId >= totalVoxels)
         return;
 
-    uint chunkIndex = globalThreadId / VoxelsPerChunk_;
+    uint activeChunkIndex = globalThreadId / VoxelsPerChunk_;
     uint voxelIndexInChunk = globalThreadId % VoxelsPerChunk_;
-
-    uint voxelBufferIndex = chunkIndex * VoxelsPerChunk_ + voxelIndexInChunk;
+    uint slotIndex = ActiveSlotIndices[activeChunkIndex];
+    uint voxelBufferIndex = slotIndex * VoxelsPerChunk_ + voxelIndexInChunk;
     uint mat = VoxelMaterialBuffer[voxelBufferIndex];
     uint prev;
     if (mat == 0)
-        InterlockedAdd(AirCount[chunkIndex], 1, prev);
+        InterlockedAdd(AirCount[slotIndex], 1, prev);
     else
-        InterlockedAdd(SolidCount[chunkIndex], 1, prev);
+        InterlockedAdd(SolidCount[slotIndex], 1, prev);
 }
 
-// Resolve flags from counts; skip freed slots (slotGeneration check).
+// Resolve flags from counts for active slots only; skip freed slots (slotGeneration check).
 [numthreads(64, 1, 1)]
 void AnalyzeChunkFlags(uint id : SV_DispatchThreadID)
 {
-    if (id >= ChunkCount_)
+    if (id >= ActiveCount_)
         return;
+    uint slotIndex = ActiveSlotIndices[id];
 
-    ChunkDescriptor desc = ChunkDescriptors[id];
-    if (ExpectedGeneration[id] != desc.slotGeneration)
+    ChunkDescriptor desc = ChunkDescriptors[slotIndex];
+    if (ExpectedGeneration[slotIndex] != desc.slotGeneration)
         return;
     // slotGeneration 0 is valid (first allocation); do NOT skip it.
 
-    uint solid = SolidCount[id];
-    uint air = AirCount[id];
+    uint solid = SolidCount[slotIndex];
+    uint air = AirCount[slotIndex];
     uint flags = 0;
     if (solid == 0)
         flags = CHUNK_FLAG_EMPTY;
@@ -85,7 +89,7 @@ void AnalyzeChunkFlags(uint id : SV_DispatchThreadID)
     else
         flags = CHUNK_FLAG_MIXED;
     desc.flags = flags;
-    ChunkDescriptors[id] = desc;
+    ChunkDescriptors[slotIndex] = desc;
 }
 
 // Downsample 2x2x2 -> 1 voxel for LOD (majority vote). Run per chunk with ChunkIndex_ set.

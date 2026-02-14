@@ -1,19 +1,31 @@
 // VoxelMeshing.compute - GPU face extraction (no greedy), vertex generation
 #pragma kernel DetectFaces
 #pragma kernel GenerateVertices
+#pragma kernel WriteMeshDescriptor
+
+struct MeshChunkDescriptor
+{
+    int3 coord;
+    uint slotGeneration;
+    uint voxelOffset;
+    uint meshOffset;
+    uint vertexCount;
+    uint flags;
+};
 
 StructuredBuffer<uint> VoxelMaterialBuffer;
 RWStructuredBuffer<uint> FaceBuffer;
 RWStructuredBuffer<uint> FaceCounter;
 RWStructuredBuffer<float3> MeshVertexBuffer;
 RWStructuredBuffer<float3> MeshNormalBuffer;
+RWStructuredBuffer<MeshChunkDescriptor> ChunkDescriptors;
 
-uint ChunkSlot_;
 uint ChunkSize_;
 uint VoxelOffset_;
 uint MeshVertexOffset_;
 uint MaxFaces_;
-uint FaceCount_;
+uint SlotIndex_;
+uint MaxFacesForSlot_;
 
 static const int3 FaceOffsets[6] = {
     int3(-1,0,0), int3(1,0,0), int3(0,-1,0), int3(0,1,0), int3(0,0,-1), int3(0,0,1)
@@ -115,10 +127,14 @@ float3 GetFaceCorner(int3 pos, uint face, uint corner)
 }
 
 // 6 vertices per quad (triangle list: tri 0,1,2 and 2,3,0) for DrawProceduralIndirect (no index buffer).
+// Reads FaceCounter[0] from buffer instead of CPU readback; no sync needed.
 [numthreads(64, 1, 1)]
 void GenerateVertices(uint id : SV_DispatchThreadID)
 {
-    if (id >= FaceCount_)
+    uint faceCount = FaceCounter[0];
+    if (faceCount > MaxFacesForSlot_)
+        faceCount = MaxFacesForSlot_;
+    if (id >= faceCount)
         return;
 
     uint packed0 = FaceBuffer[id * 2 + 0];
@@ -150,16 +166,44 @@ void GenerateVertices(uint id : SV_DispatchThreadID)
     MeshNormalBuffer[vertexBase + 5] = normal;
 }
 
+// Write mesh descriptor from FaceCounter; no CPU readback.
+[numthreads(1, 1, 1)]
+void WriteMeshDescriptor(uint id : SV_DispatchThreadID)
+{
+    MeshChunkDescriptor desc = ChunkDescriptors[SlotIndex_];
+    uint faceCount = FaceCounter[0];
+    if (faceCount == 0 || faceCount > MaxFaces_)
+    {
+        desc.meshOffset = 0xFFFFFFFF;
+        desc.vertexCount = 0;
+    }
+    else
+    {
+        if (faceCount > MaxFacesForSlot_)
+            faceCount = MaxFacesForSlot_;
+        desc.meshOffset = MeshVertexOffset_;
+        desc.vertexCount = faceCount * 6;
+    }
+    ChunkDescriptors[SlotIndex_] = desc;
+}
+
 #pragma kernel PadSlot
-uint PadStart_;
-uint PadCount_;
+uint PadMeshVertexOffset_;
+uint PadMaxVerticesPerChunk_;
+uint PadMaxFacesForSlot_;
 // Fill slot tail with degenerate vertices so DrawProceduralIndirect doesn't read garbage.
+// Reads FaceCounter to compute actual vertex count; no CPU readback.
 [numthreads(64, 1, 1)]
 void PadSlot(uint id : SV_DispatchThreadID)
 {
-    if (id >= PadCount_)
+    uint faceCount = FaceCounter[0];
+    if (faceCount > PadMaxFacesForSlot_)
+        faceCount = PadMaxFacesForSlot_;
+    uint vertexCount = faceCount * 6;
+    uint padCount = PadMaxVerticesPerChunk_ - vertexCount;
+    if (id >= padCount)
         return;
-    uint idx = PadStart_ + id;
+    uint idx = PadMeshVertexOffset_ + vertexCount + id;
     float3 zero = float3(0, 0, 0);
     MeshVertexBuffer[idx] = zero;
     MeshNormalBuffer[idx] = zero;

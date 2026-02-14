@@ -42,10 +42,15 @@ namespace TerraVoxel.Voxel.GPU
             _airCount = new ComputeBuffer(Mathf.Max(1, maxChunks), sizeof(uint));
         }
 
-        /// <summary>Run analysis for all slots; full chunk coverage. Updates ChunkDescriptors.Flags (empty/solid/mixed).</summary>
+        /// <summary>Run analysis for active slots only. Updates ChunkDescriptors.Flags (empty/solid/mixed). Call state.UpdateActiveSlotIndicesBuffer() before this.</summary>
         public void ScheduleAnalysis(GpuWorldState state)
         {
             if (!IsValid || state == null) return;
+            int activeCount = state.ChunkCount;
+            if (activeCount <= 0) return;
+            if (state.ActiveSlotIndicesBuffer == null) return;
+
+            state.UpdateActiveSlotIndicesBuffer();
 
             int chunkSize = state.ChunkSize;
             int voxelsPerChunk = state.VoxelsPerChunk;
@@ -55,19 +60,20 @@ namespace TerraVoxel.Voxel.GPU
 
             _shader.SetBuffer(_kernelClearCounts, "SolidCount", _solidCount);
             _shader.SetBuffer(_kernelClearCounts, "AirCount", _airCount);
-            _shader.SetInt("ChunkCount_", maxChunks);
-            int groupsClear = Mathf.CeilToInt(maxChunks / 64f);
+            _shader.SetBuffer(_kernelClearCounts, "ActiveSlotIndices", state.ActiveSlotIndicesBuffer);
+            _shader.SetInt("ActiveCount_", activeCount);
+            int groupsClear = Mathf.CeilToInt(activeCount / 64f);
             _shader.Dispatch(_kernelClearCounts, Mathf.Max(1, groupsClear), 1, 1);
 
             _shader.SetBuffer(_kernelAnalyzeChunkCount, "VoxelMaterialBuffer", state.VoxelMaterialBuffer);
             _shader.SetBuffer(_kernelAnalyzeChunkCount, "SolidCount", _solidCount);
             _shader.SetBuffer(_kernelAnalyzeChunkCount, "AirCount", _airCount);
+            _shader.SetBuffer(_kernelAnalyzeChunkCount, "ActiveSlotIndices", state.ActiveSlotIndicesBuffer);
             _shader.SetInt("ChunkSize_", chunkSize);
             _shader.SetInt("VoxelsPerChunk_", voxelsPerChunk);
-            _shader.SetInt("ChunkCount_", maxChunks);
+            _shader.SetInt("ActiveCount_", activeCount);
 
-            int totalVoxels = maxChunks * voxelsPerChunk;
-            int groupsCount = Mathf.CeilToInt((float)totalVoxels / ThreadsPerGroup);
+            int totalVoxels = activeCount * voxelsPerChunk;
             for (int voxelStart = 0; voxelStart < totalVoxels; voxelStart += MaxGroupsPerDispatch * ThreadsPerGroup)
             {
                 int remaining = totalVoxels - voxelStart;
@@ -80,11 +86,12 @@ namespace TerraVoxel.Voxel.GPU
             _shader.SetBuffer(_kernelAnalyzeChunkFlags, "ChunkDescriptors", state.ChunkDescriptors);
             _shader.SetBuffer(_kernelAnalyzeChunkFlags, "SolidCount", _solidCount);
             _shader.SetBuffer(_kernelAnalyzeChunkFlags, "AirCount", _airCount);
+            _shader.SetBuffer(_kernelAnalyzeChunkFlags, "ActiveSlotIndices", state.ActiveSlotIndicesBuffer);
             if (state.ExpectedGenerationBuffer != null)
                 _shader.SetBuffer(_kernelAnalyzeChunkFlags, "ExpectedGeneration", state.ExpectedGenerationBuffer);
-            _shader.SetInt("ChunkCount_", maxChunks);
+            _shader.SetInt("ActiveCount_", activeCount);
 
-            int groupsFlags = Mathf.CeilToInt(maxChunks / 64f);
+            int groupsFlags = Mathf.CeilToInt(activeCount / 64f);
             _shader.Dispatch(_kernelAnalyzeChunkFlags, Mathf.Max(1, groupsFlags), 1, 1);
         }
 

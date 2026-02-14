@@ -1,6 +1,12 @@
 // VoxelGeneration.compute - GPU chunk generation (heightmap + noise)
 #pragma kernel GenerateChunk
 
+#define USE_BCC_NOISE 0
+
+#if USE_BCC_NOISE
+#include "Include/BCCNoise8.hlsl"
+#endif
+
 RWStructuredBuffer<uint> VoxelMaterialBuffer; // ushort material packed in low 16 bits
 uint3 ChunkCoord_;
 uint ChunkSize_;
@@ -12,7 +18,7 @@ int ColumnChunks_;
 uint Seed_;
 uint MaterialIndex_; // default solid material (0 = air)
 
-// Simple 2D hash for noise (deterministic)
+// Simple 2D hash for noise (deterministic) - fallback when USE_BCC_NOISE=0
 float Hash(float2 p)
 {
     float3 p3 = frac(float3(p.xyx) * 0.1031);
@@ -20,22 +26,30 @@ float Hash(float2 p)
     return frac((p3.x + p3.y) * p3.z);
 }
 
-// Value noise 2D
 float Noise2D(float2 uv)
 {
     float2 i = floor(uv);
     float2 f = frac(uv);
-    f = f * f * (3.0 - 2.0 * f); // smoothstep
-
+    f = f * f * (3.0 - 2.0 * f);
     float a = Hash(i);
     float b = Hash(i + float2(1, 0));
     float c = Hash(i + float2(0, 1));
     float d = Hash(i + float2(1, 1));
-
     return lerp(lerp(a, b, f.x), lerp(c, d, f.x), f.y);
 }
 
-// Multi-octave noise (single layer approximation). Same scale as CPU when NoiseStack has one layer (no *0.5).
+#if USE_BCC_NOISE
+float SampleNoise(float2 worldXZ)
+{
+    float3 p = float3(worldXZ.x * HorizontalScale_, worldXZ.y * HorizontalScale_, 0);
+    p += float3(Seed_ * 0.1, Seed_ * 0.13, Seed_ * 0.17);
+    float n = Bcc8NoisePlaneFirstValue(p);
+    n += 0.5 * Bcc8NoisePlaneFirstValue(p * 2.0);
+    n += 0.25 * Bcc8NoisePlaneFirstValue(p * 4.0);
+    n /= (1.0 + 0.5 + 0.25);
+    return n * 0.5 + 0.5;
+}
+#else
 float SampleNoise(float2 worldXZ)
 {
     float2 uv = worldXZ * HorizontalScale_;
@@ -46,6 +60,7 @@ float SampleNoise(float2 worldXZ)
     n /= (1.0 + 0.5 + 0.25);
     return n;
 }
+#endif
 
 [numthreads(8, 8, 8)]
 void GenerateChunk(uint3 id : SV_DispatchThreadID)

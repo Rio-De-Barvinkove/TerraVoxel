@@ -9,9 +9,11 @@ using TerraVoxel.Voxel.Occlusion;
 using TerraVoxel.Voxel.Rendering;
 using TerraVoxel.Voxel.Save;
 using TerraVoxel.Voxel.Svo;
+using TerraVoxel.Voxel.Systems;
 using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine;
+using UnityEngine.Profiling;
 using UnityEngine.Serialization;
 
 namespace TerraVoxel.Voxel.Streaming
@@ -74,6 +76,7 @@ namespace TerraVoxel.Voxel.Streaming
         [Header("View Cone")]
         [SerializeField] ChunkViewConePrioritizer viewCone;
         [Header("Full LOD System")]
+        [Tooltip("When true, ChunkLodManager.ProcessFullLod iterates 2000+ chunks; heavy for GPU. Keep disabled for GPU pipeline.")]
         [SerializeField] bool enableFullLod = false;
         [Tooltip("Resolve LOD by distance before first mesh (spawns distant chunks at coarse LOD immediately).")]
         [SerializeField] bool initialLodFromDistance = true;
@@ -103,6 +106,18 @@ namespace TerraVoxel.Voxel.Streaming
         [SerializeField] GpuDrivenRenderer gpuDrivenRenderer;
         [Tooltip("Max GPU chunk slots. For Load Radius 20, Columns 4 need ~6724. Increase if pending stays high and warning appears.")]
         [SerializeField] [Range(64, 16384)] int gpuMaxChunks = 8192;
+        [Tooltip("Max async vertex readbacks per frame for mesh colliders. Limits GPU stall when many chunks spawn.")]
+        [SerializeField] [Range(1, 8)] int maxColliderReadbacksPerFrame = 1;
+        [Tooltip("Cap maxSpawnsPerFrame when GPU pipeline is active. Reduces async readback queue growth.")]
+        [SerializeField] [Range(1, 8)] int gpuMaxSpawnsPerFrame = 2;
+        [Tooltip("Dual pipeline: chunks within this radius (XZ) use CPU path (MeshRenderer+MeshCollider); beyond use GPU. 0 = all GPU when useGpuPipeline.")]
+        [SerializeField] [Range(0, 32)] int dualPipelineCpuRadius = 0;
+        [Tooltip("When true, use ChunkOctree for pending/LOD instead of distance-based. Octree subdivides near camera, collapses far.")]
+        [SerializeField] bool enableOctreeLod = false;
+        [Tooltip("Max octree node creations per frame when enableOctreeLod. Throttles subdivide.")]
+        [SerializeField] [Range(1, 200)] int maxOctreeNodeCreationsPerFrame = 50;
+        [Tooltip("When enabled, runs GpuChunkAnalyzer every 4th frame (expensive: atomics over all voxels). Disable for FPS; Empty then derived from VertexCount==0 in collider callback.")]
+        [SerializeField] bool gpuChunkAnalyzerEnabled = false;
         [Header("GPU Debug")]
         [Tooltip("When unchecked, frustum culling is effectively disabled (all meshed chunks drawn). Use to test if culling is the issue.")]
         [SerializeField] bool gpuFrustumCulling = true;
@@ -208,6 +223,9 @@ namespace TerraVoxel.Voxel.Streaming
         readonly Queue<ChunkCoord> _faceRemeshQueue = new Queue<ChunkCoord>();
         readonly HashSet<ChunkCoord> _faceRemeshSet = new HashSet<ChunkCoord>();
         readonly Dictionary<ChunkCoord, FaceMeshTask> _faceMeshJobs = new Dictionary<ChunkCoord, FaceMeshTask>();
+        readonly List<DeferredMeshComplete> _deferredMeshComplete = new List<DeferredMeshComplete>();
+        readonly Dictionary<ChunkCoord, int> _pendingLodStep = new Dictionary<ChunkCoord, int>();
+        ChunkOctreeLodManager _octreeLodManager;
         readonly List<RemoveCandidate> _removeCandidates = new List<RemoveCandidate>(256);
         /// <summary>Reused buffers for DropWorkQueues; Clear() before use.</summary>
         readonly List<ChunkCoord> _dropPendingKeep = new List<ChunkCoord>();
@@ -288,7 +306,7 @@ namespace TerraVoxel.Voxel.Streaming
         GpuMesher _gpuMesher;
         GpuCuller _gpuCuller;
         GpuReadbackManager _gpuReadbackManager;
-        Dictionary<int, uint> _gpuSlotFlags = new Dictionary<int, uint>();
+        GpuColliderReadbackQueue _gpuColliderReadbackQueue;
 
         bool HasAnySolid(ChunkData data)
         {
@@ -329,6 +347,7 @@ namespace TerraVoxel.Voxel.Streaming
             public int SliceIndex;
             public int SliceCount;
             public int SliceSize;
+            public int LodStepOverride;
         }
 
         internal struct MeshTask
@@ -346,6 +365,12 @@ namespace TerraVoxel.Voxel.Streaming
             public Chunk Chunk;
             public FaceMeshJobHandle Job;
             public int FaceMask;
+        }
+
+        internal struct DeferredMeshComplete
+        {
+            public ChunkCoord Coord;
+            public MeshTask Task;
         }
 
         internal struct CachedChunkData
@@ -523,7 +548,6 @@ namespace TerraVoxel.Voxel.Streaming
                 return;
             }
             addColliders = enabled;
-            float chunkWorldSize = worldGen != null ? worldGen.ChunkSize * VoxelConstants.VoxelSize : 0f;
             foreach (var chunk in _active.Values)
             {
                 if (chunk == null) continue;
@@ -531,14 +555,14 @@ namespace TerraVoxel.Voxel.Streaming
                 {
                     chunk.SetColliderEnabled(false);
                     if (chunk.IsGpuRendered)
-                        chunk.SetGpuBoxCollider(false, 0f);
+                        chunk.SetGpuColliderEnabled(false);
                     continue;
                 }
                 if (chunk.IsGpuRendered)
                 {
                     bool hasGeometry = enabled && chunk.Data.GpuSlot >= 0 && _gpuWorldState != null
                         && _gpuWorldState.GetDescriptor(chunk.Data.GpuSlot).VertexCount > 0;
-                    chunk.SetGpuBoxCollider(hasGeometry, hasGeometry ? chunkWorldSize : 0f);
+                    chunk.SetGpuColliderEnabled(enabled && hasGeometry);
                 }
                 else
                     chunk.SetColliderEnabled(enabled);
@@ -632,6 +656,9 @@ namespace TerraVoxel.Voxel.Streaming
                     _gpuMesher = new GpuMesher();
                     _gpuMesher.Initialize(voxelMesh);
                 }
+                _gpuColliderReadbackQueue = new GpuColliderReadbackQueue(maxColliderReadbacksPerFrame, _gpuWorldState.MaxVerticesPerChunk);
+                _gpuColliderReadbackQueue.SetWorldState(_gpuWorldState);
+                _gpuColliderReadbackQueue.SetChunkResolver(c => _active.TryGetValue(c, out var ch) ? ch : null);
                 if (gpuDrivenRenderer != null)
                 {
                     gpuDrivenRenderer.SetWorldState(_gpuWorldState);
@@ -698,14 +725,22 @@ namespace TerraVoxel.Voxel.Streaming
                 SetPlayerFrozen(false);
                 _waitingSafeSpawnMesh = false;
             }
+            Profiler.BeginSample("ChunkManager.Update");
             streamingBudget?.BeginFrame();
             _cacheOpsThisFrame = 0;
             UpdateAdaptiveLimits();
-            if (_jobs != null) _jobs.ProcessGenJobs();
-            else ProcessGenJobs();
-            if (_jobs != null) _jobs.ProcessMeshJobs();
-            else ProcessMeshJobs();
-            if (_integration != null) _integration.ProcessIntegrationQueue();
+            if (!useGpuPipeline)
+            {
+                Profiler.BeginSample("ProcessGenJobs");
+                if (_jobs != null) _jobs.ProcessGenJobs();
+                else ProcessGenJobs();
+                Profiler.EndSample();
+                Profiler.BeginSample("ProcessMeshJobs");
+                if (_jobs != null) _jobs.ProcessMeshJobs();
+                else ProcessMeshJobs();
+                Profiler.EndSample();
+                if (_integration != null) _integration.ProcessIntegrationQueue();
+            }
             if (streamingPaused)
             {
                 if (!_warnedStreamingPaused)
@@ -722,12 +757,17 @@ namespace TerraVoxel.Voxel.Streaming
                 }
                 if (_jobs != null) _jobs.ProcessRemeshQueue();
                 else ProcessRemeshQueue();
+                Profiler.EndSample();
                 return;
             }
+            Profiler.BeginSample("MaintainRadius");
             if (_loader != null) _loader.MaintainRadius();
             else MaintainRadius();
+            Profiler.EndSample();
+            Profiler.BeginSample("ProcessPending");
             if (_loader != null) _loader.ProcessPending();
             else ProcessPending();
+            Profiler.EndSample();
             if (_loader != null) _loader.ProcessPreload();
             else ProcessPreload();
             if (_loader != null) _loader.ProcessRemovalQueue();
@@ -741,6 +781,7 @@ namespace TerraVoxel.Voxel.Streaming
             }
             if (_jobs != null) _jobs.ProcessRemeshQueue();
             else ProcessRemeshQueue();
+            Profiler.BeginSample("ChunkLodManager");
             if (enableFullLod)
             {
                 if (_lod != null) _lod.ProcessFullLod();
@@ -749,55 +790,89 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 if (_lod != null) _lod.ProcessLodUpgrades();
             }
+            Profiler.EndSample();
             if (enableFarRangeLod)
             {
                 if (_lod != null) _lod.ProcessFarRangeLod();
                 else ProcessFarRangeLod();
             }
-            if (useGpuPipeline && _gpuChunkAnalyzer != null && _gpuChunkAnalyzer.IsValid && _gpuWorldState != null)
-            {
-                // Throttle: run full analysis every 2nd frame to reduce cost (maxChunks * voxelsPerChunk is heavy).
-                if ((Time.frameCount & 1) == 0)
-                    _gpuChunkAnalyzer.ScheduleAnalysis(_gpuWorldState);
-                if (_gpuReadbackManager != null)
-                    _gpuReadbackManager.RequestAllDescriptorFlags(_gpuWorldState, (flags) => { _gpuSlotFlags = flags; });
-            }
+            Profiler.BeginSample("OcclusionCuller");
             if (occlusionCuller != null)
                 occlusionCuller.Tick(this);
-            if (useGpuPipeline && _gpuReadbackManager != null)
-                _gpuReadbackManager.Update();
-            // GPU pipeline: single call site for GpuCuller.Cull (ChunkOcclusionCuller.Tick returns early when useGpu).
-            if (useGpuPipeline && _gpuWorldState != null && gpuDrivenRenderer != null)
-            {
-                Camera cam = Camera.main;
-                if (cam == null)
-                {
-                    if (!_warnedGpuCamNull)
-                    {
-                        _warnedGpuCamNull = true;
-                        Debug.LogWarning("[ChunkManager] Camera.main is null; GPU voxels are not drawn. Tag your scene camera as MainCamera.");
-                    }
-                }
-                else
-                {
-                    if (_gpuCuller != null && _gpuCuller.IsValid && worldGen != null)
-                    {
-                        float chunkWorldSize = worldGen.ChunkSize * VoxelConstants.VoxelSize;
-                        if (chunkWorldSize > 0f)
-                        {
-                            float? frustumOverride = gpuFrustumCulling ? null : (float?)10000f;
-                            RenderTexture depthTex = gpuOcclusionCulling ? null : null;
-                            RenderTexture hiZTex = gpuOcclusionCulling ? null : null;
-                            _gpuCuller.Cull(_gpuWorldState, cam, chunkWorldSize, depthTex, hiZTex, 0.01f, frustumOverride, gpuFrustumMarginScale);
-                        }
-                    }
-                    gpuDrivenRenderer.Render(cam);
-                }
-            }
+            Profiler.EndSample();
+            if (useGpuPipeline)
+                UpdateGpuPipeline();
             if (_physics != null)
                 _physics.Tick();
             else if (physicsOptimizer != null)
                 physicsOptimizer.Tick(this);
+
+            PerformanceDiagnostics.Record(
+                ActiveCount, PendingCount,
+                _gpuWorldState?.ChunkCount ?? 0,
+                _gpuColliderReadbackQueue?.PendingCount ?? 0,
+                0, _lastGenMs, _lastMeshMs, 0, 0, 0,
+                Time.unscaledDeltaTime * 1000f,
+                -1f,
+                (long)(UnityEngine.Profiling.Profiler.GetAllocatedMemoryForGraphicsDriver() / (1024 * 1024)),
+                (long)(UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / (1024 * 1024)));
+            Profiler.EndSample();
+        }
+
+        void LateUpdate()
+        {
+            if (!useGpuPipeline && _deferredMeshComplete.Count > 0)
+            {
+                Profiler.BeginSample("ProcessDeferredMeshComplete");
+                ProcessDeferredMeshComplete();
+                Profiler.EndSample();
+            }
+        }
+
+        /// <summary>GPU pipeline: analyzer (if enabled), readback, collider queue, culling, render. Called once per frame when useGpuPipeline.</summary>
+        void UpdateGpuPipeline()
+        {
+            Profiler.BeginSample("UpdateGpuPipeline");
+            if (gpuChunkAnalyzerEnabled && _gpuChunkAnalyzer != null && _gpuChunkAnalyzer.IsValid && _gpuWorldState != null && _gpuWorldState.ChunkCount > 0)
+            {
+                if ((Time.frameCount & 3) == 0)
+                    _gpuChunkAnalyzer.ScheduleAnalysis(_gpuWorldState);
+            }
+            _gpuReadbackManager?.Update();
+            Profiler.BeginSample("GpuColliderReadbackQueue.ProcessQueue");
+            _gpuColliderReadbackQueue?.ProcessQueue();
+            Profiler.EndSample();
+            if (_gpuWorldState == null || gpuDrivenRenderer == null)
+            {
+                Profiler.EndSample();
+                return;
+            }
+            Camera cam = Camera.main;
+            if (cam == null)
+            {
+                if (!_warnedGpuCamNull)
+                {
+                    _warnedGpuCamNull = true;
+                    Debug.LogWarning("[ChunkManager] Camera.main is null; GPU voxels are not drawn. Tag your scene camera as MainCamera.");
+                }
+                Profiler.EndSample();
+                return;
+            }
+            Profiler.BeginSample("GpuCuller.Cull");
+            if (_gpuCuller != null && _gpuCuller.IsValid && worldGen != null)
+            {
+                float chunkWorldSize = worldGen.ChunkSize * VoxelConstants.VoxelSize;
+                if (chunkWorldSize > 0f)
+                {
+                    float? frustumOverride = gpuFrustumCulling ? null : (float?)10000f;
+                    RenderTexture depthTex = gpuOcclusionCulling ? null : null;
+                    RenderTexture hiZTex = gpuOcclusionCulling ? null : null;
+                    _gpuCuller.Cull(_gpuWorldState, cam, chunkWorldSize, depthTex, hiZTex, 0.01f, frustumOverride, gpuFrustumMarginScale);
+                }
+            }
+            Profiler.EndSample();
+            gpuDrivenRenderer.Render(cam);
+            Profiler.EndSample();
         }
 
         /// <summary>Resets limits to base each frame; reduces them if over gen/mesh/integration/memory/GPU threshold. Limits recover when not throttled (cooldown expires).</summary>
@@ -991,6 +1066,11 @@ namespace TerraVoxel.Voxel.Streaming
             _gpuMesher = null;
             _gpuWorldState?.Dispose();
             _gpuWorldState = null;
+            if (_gpuColliderReadbackQueue != null)
+            {
+                _gpuColliderReadbackQueue.SetWorldState(null);
+                _gpuColliderReadbackQueue.SetChunkResolver(null);
+            }
 
             if (hybridSave != null)
                 hybridSave.HandleAllChunksDestroyed(_active.Values);

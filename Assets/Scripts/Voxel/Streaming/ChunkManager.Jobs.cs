@@ -197,13 +197,14 @@ namespace TerraVoxel.Voxel.Streaming
                 }
                 else
                 {
-                    if (!ScheduleMeshForChunk(coord, task.SpawnStart, GetInitialLodStep(coord)))
+                    int lodStep = task.LodStepOverride > 0 ? task.LodStepOverride : GetInitialLodStep(coord);
+                    if (!ScheduleMeshForChunk(coord, task.SpawnStart, lodStep))
                         QueueRemesh(coord);
                 }
             }
         }
 
-        /// <summary>Completes finished mesh jobs on main thread; queues integration. Complete/Dispose wrapped in try-catch per coord.</summary>
+        /// <summary>Collects finished mesh jobs and defers Complete to LateUpdate; queues integration after Complete.</summary>
         internal void ProcessMeshJobs()
         {
             if (useGpuPipeline) return;
@@ -237,15 +238,27 @@ namespace TerraVoxel.Voxel.Streaming
                         QueueRemoval(coord);
                     continue;
                 }
+                _meshJobs.Remove(coord);
+                _deferredMeshComplete.Add(new DeferredMeshComplete { Coord = coord, Task = task });
+            }
+        }
+
+        /// <summary>Completes deferred mesh jobs in LateUpdate; applies mesh and queues integration.</summary>
+        internal void ProcessDeferredMeshComplete()
+        {
+            if (_deferredMeshComplete.Count == 0) return;
+            for (int i = 0; i < _deferredMeshComplete.Count; i++)
+            {
+                var d = _deferredMeshComplete[i];
+                var coord = d.Coord;
+                var task = d.Task;
                 try { task.Job.Handle.Complete(); }
                 catch (Exception e)
                 {
-                    Debug.LogWarning($"[ChunkManager] ProcessMeshJobs Complete {coord}: {e.Message}");
+                    Debug.LogWarning($"[ChunkManager] ProcessDeferredMeshComplete {coord}: {e.Message}");
                     try { task.Job.Dispose(); } catch { /* ignore */ }
-                    _meshJobs.Remove(coord);
                     continue;
                 }
-                _meshJobs.Remove(coord);
 
                 if (!_active.TryGetValue(coord, out var chunk) || chunk == null || chunk != task.Chunk)
                 {
@@ -281,6 +294,7 @@ namespace TerraVoxel.Voxel.Streaming
                     : _lastMeshMs;
                 _lastSpawnCoord = coord;
             }
+            _deferredMeshComplete.Clear();
         }
 
         internal bool IsChunkBusy(ChunkCoord coord)
@@ -293,7 +307,7 @@ namespace TerraVoxel.Voxel.Streaming
             return _genJobs.ContainsKey(coord);
         }
 
-        internal void ScheduleGenJob(ChunkCoord coord, Chunk chunk, double spawnStart, bool applySafeSpawn, bool applyDelta)
+        internal void ScheduleGenJob(ChunkCoord coord, Chunk chunk, double spawnStart, bool applySafeSpawn, bool applyDelta, int lodStepOverride = 0)
         {
             if (useGpuPipeline) return;
             if (_genJobs.ContainsKey(coord)) return;
@@ -325,7 +339,8 @@ namespace TerraVoxel.Voxel.Streaming
                 UseSlices = useSlices,
                 SliceIndex = 0,
                 SliceCount = slices,
-                SliceSize = sliceSize
+                SliceSize = sliceSize,
+                LodStepOverride = lodStepOverride
             };
         }
 

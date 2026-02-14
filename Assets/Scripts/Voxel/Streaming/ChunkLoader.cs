@@ -55,7 +55,7 @@ namespace TerraVoxel.Voxel.Streaming
                     if (!_loggedBudget) { _loggedBudget = true; Debug.Log("[ChunkManager] ProcessPending: break BudgetExceeded"); }
                     break;
                 }
-                if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuMaxChunks)
+                if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuWorldStateMaxChunks)
                 {
                     if (!_loggedGpuLimit)
                     {
@@ -117,7 +117,7 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 iterations++;
                 if (_ctx.BudgetExceeded()) break;
-                if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuMaxChunks) break;
+                if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuWorldStateMaxChunks) break;
                 if (!_ctx.UseGpuPipeline && _ctx.GenJobs.Count >= _ctx.CurrentMaxGenJobsInFlight) break;
                 var coord = _ctx.Preload.Dequeue();
                 _ctx.PreloadSet.Remove(coord);

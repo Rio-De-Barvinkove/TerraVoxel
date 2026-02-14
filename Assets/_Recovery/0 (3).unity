@@ -380,16 +380,16 @@ MonoBehaviour:
   chunkPrefab: {fileID: 2085738739}
   worldGen: {fileID: 11400000, guid: 182e37385ea739840907a153355f5e7d, type: 2}
   noiseStack: {fileID: 11400000, guid: 7be5acb9b4187354ea266e68d3f3b281, type: 2}
-  loadRadius: 32
-  unloadRadius: 35
+  loadRadius: 20
+  unloadRadius: 28
   addColliders: 1
   physicsOptimizer: {fileID: 448214055}
-  maxSpawnsPerFrame: 20
-  maxRemeshPerFrame: 12
-  maxRemovalsPerFrame: 20
+  maxSpawnsPerFrame: 19
+  maxRemeshPerFrame: 36
+  maxRemovalsPerFrame: 17
   scaleJobsByProcessorCount: 1
-  maxGenJobsInFlight: 12
-  maxMeshJobsInFlight: 12
+  maxGenJobsInFlight: 16
+  maxMeshJobsInFlight: 16
   maxIntegrationsPerFrame: 16
   dynamicIntegrationLimit: 1
   maxIntegrationQueueSize: 8000
@@ -423,9 +423,12 @@ MonoBehaviour:
   voxelMeshingCompute: {fileID: 7200000, guid: 04709ffb7c7bd7343b32ebd369757d32, type: 3}
   gpuDrivenRenderer: {fileID: 448214060}
   gpuMaxChunks: 12579
-  gpuFrustumCulling: 0
+  maxColliderReadbacksPerFrame: 2
+  gpuMaxSpawnsPerFrame: 5
+  gpuChunkAnalyzerEnabled: 0
+  gpuFrustumCulling: 1
   gpuFrustumMarginScale: 6
-  gpuOcclusionCulling: 0
+  gpuOcclusionCulling: 1
   svoManager: {fileID: 448214057}
   streamingBudget:
     enabled: 0
@@ -450,7 +453,7 @@ MonoBehaviour:
   reverseLodUpgradeSeconds: 0.1
   maxLodUpgradesPerFrame: 2
   reverseLodMinDistance: 2
-  enableAdaptiveLimits: 1
+  enableAdaptiveLimits: 0
   genSlowMs: 24
   meshSlowMs: 24
   integrationSlowMs: 8

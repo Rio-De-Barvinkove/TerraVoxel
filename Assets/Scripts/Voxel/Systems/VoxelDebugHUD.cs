@@ -245,7 +245,10 @@ namespace TerraVoxel.Voxel.Systems
 
             if (_mode == HudMode.Compact) return;
 
-            float startY = offset.y + 170f;
+            string diagText = PerformanceDiagnostics.GetBreakdownString();
+            GUI.Label(new Rect(offset.x, offset.y + 170f, 520f, 60f), diagText, _style);
+
+            float startY = offset.y + 230f;
             DrawGraph(new Rect(offset.x, startY, 520f, 80f), _cpuMs, "CPU ms", Color.green);
             DrawGraph(new Rect(offset.x, startY + 90f, 520f, 80f), _gpuMs, "GPU ms", Color.cyan, allowNA: true);
             DrawGraph(new Rect(offset.x, startY + 180f, 520f, 80f), _vramMb, "VRAM MB", Color.yellow);

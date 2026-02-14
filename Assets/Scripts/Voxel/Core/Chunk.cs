@@ -22,6 +22,7 @@ namespace TerraVoxel.Voxel.Core
         MeshCollider _collider;
         BoxCollider _boxCollider;
         Mesh _mesh;
+        Mesh _gpuColliderMesh;
         bool _usingSharedMesh;
         bool _gpuRendered;
 
@@ -53,6 +54,8 @@ namespace TerraVoxel.Voxel.Core
             }
             _filter.sharedMesh = _mesh;
             _usingSharedMesh = false;
+            _gpuRendered = false;
+            if (Data.IsCreated) { Data.GpuSlot = -1; Data.GpuOffset = -1; }
             IsLowLod = false;
             LodStartTime = 0;
             LodStep = 1;
@@ -63,6 +66,12 @@ namespace TerraVoxel.Voxel.Core
                 _collider.sharedMesh = null;
                 _collider.enabled = false;
             }
+            if (_gpuColliderMesh != null && Application.isPlaying)
+            {
+                Destroy(_gpuColliderMesh);
+                _gpuColliderMesh = null;
+            }
+            if (_boxCollider != null) _boxCollider.enabled = false;
 
             // Assign a default URP Lit material if none set.
             if (_renderer.sharedMaterial == null)
@@ -81,27 +90,53 @@ namespace TerraVoxel.Voxel.Core
             if (_renderer != null) _renderer.enabled = false;
         }
 
-        /// <summary>Enable or disable BoxCollider for GPU path (no mesh on chunk; use box per chunk for collision). Chunk transform is at chunk center; box center (0,0,0) and size chunkWorldSize so world bounds match coord*chunkWorldSize..(coord+1)*chunkWorldSize.</summary>
-        public void SetGpuBoxCollider(bool enabled, float chunkWorldSize)
+        /// <summary>Enable or disable GPU collider (MeshCollider only; no BoxCollider). When enabled and mesh exists, enables MeshCollider; otherwise disables.</summary>
+        public void SetGpuColliderEnabled(bool enabled)
         {
-            if (enabled && chunkWorldSize > 0.001f)
+            if (_boxCollider == null) _boxCollider = gameObject.GetComponent<BoxCollider>();
+            if (_boxCollider != null) _boxCollider.enabled = false;
+            if (_collider == null) _collider = gameObject.GetComponent<MeshCollider>();
+            if (_collider == null) _collider = gameObject.AddComponent<MeshCollider>();
+            if (_gpuColliderMesh != null && _gpuColliderMesh.vertexCount > 0)
             {
-                if (_boxCollider == null) _boxCollider = gameObject.GetComponent<BoxCollider>();
-                if (_boxCollider == null) _boxCollider = gameObject.AddComponent<BoxCollider>();
-                _boxCollider.center = Vector3.zero;
-                _boxCollider.size = new Vector3(chunkWorldSize, chunkWorldSize, chunkWorldSize);
-                _boxCollider.enabled = true;
+                _collider.sharedMesh = _gpuColliderMesh;
+                _collider.enabled = enabled;
             }
-            else if (_boxCollider != null)
+            else
             {
-                _boxCollider.enabled = false;
+                _collider.enabled = false;
             }
         }
 
-        /// <summary>Clear GPU ref and re-enable Renderer for CPU rendering. Disables GPU box collider.</summary>
+        /// <summary>Set MeshCollider from GPU mesh readback. GPU path only; uses actual geometry. Disables BoxCollider.</summary>
+        public void SetGpuMeshCollider(Mesh mesh)
+        {
+            if (_boxCollider != null) _boxCollider.enabled = false;
+            if (_gpuColliderMesh != null)
+            {
+                if (Application.isPlaying) Destroy(_gpuColliderMesh);
+                _gpuColliderMesh = null;
+            }
+            if (_collider == null) _collider = gameObject.GetComponent<MeshCollider>();
+            if (_collider == null) _collider = gameObject.AddComponent<MeshCollider>();
+            if (mesh != null && mesh.vertexCount > 0)
+            {
+                _gpuColliderMesh = mesh;
+                _collider.sharedMesh = null;
+                _collider.sharedMesh = mesh;
+                _collider.enabled = true;
+            }
+            else
+            {
+                _collider.sharedMesh = null;
+                _collider.enabled = false;
+            }
+        }
+
+        /// <summary>Clear GPU ref and re-enable Renderer for CPU rendering. Disables GPU colliders.</summary>
         public void ClearGpuMeshRef()
         {
-            SetGpuBoxCollider(false, 0f);
+            SetGpuMeshCollider(null);
             _gpuRendered = false;
             Data.GpuSlot = -1;
             Data.GpuOffset = -1;

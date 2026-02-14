@@ -21,8 +21,8 @@ namespace TerraVoxel.Voxel.Streaming
         internal void ProcessFaceRemeshQueue() => _ctx.Owner.ProcessFaceRemeshQueue();
         internal void ProcessFaceMeshJobs() => _ctx.Owner.ProcessFaceMeshJobs();
 
-        internal void ScheduleGenJob(ChunkCoord coord, Chunk chunk, double spawnStart, bool applySafeSpawn, bool applyDelta)
-            => _ctx.Owner.ScheduleGenJob(coord, chunk, spawnStart, applySafeSpawn, applyDelta);
+        internal void ScheduleGenJob(ChunkCoord coord, Chunk chunk, double spawnStart, bool applySafeSpawn, bool applyDelta, int lodStepOverride = 0)
+            => _ctx.Owner.ScheduleGenJob(coord, chunk, spawnStart, applySafeSpawn, applyDelta, lodStepOverride);
 
         internal bool ScheduleMeshForChunk(ChunkCoord coord, double spawnStart, int lodStep = 1)
             => _ctx.Owner.ScheduleMeshForChunk(coord, spawnStart, lodStep);

@@ -31,11 +31,9 @@ namespace TerraVoxel.Voxel.GPU
         Material _materialInstance;
         MaterialPropertyBlock _properties;
         Bounds _bounds;
-        static readonly uint[] _visibleCountReadback = new uint[1];
         float _debugLogNext;
         bool _materialConfigured;
         static bool _warnedNoTexture;
-        static bool _warnedVisibleZero;
         static bool _warnedDrawViaFeature;
 
         /// <summary>Apply texture array and triplanar params from library so instanced material is not black/pink. Call from ChunkManager when GPU pipeline starts.</summary>
@@ -102,27 +100,7 @@ namespace TerraVoxel.Voxel.GPU
                 _worldState.MeshNormalBuffer == null || _worldState.DrawArgsBuffer == null ||
                 _worldState.VisibleCountBuffer == null)
                 return;
-
-            _worldState.VisibleCountBuffer.GetData(_visibleCountReadback, 0, 0, 1);
-            int visibleCount = (int)_visibleCountReadback[0];
-
-            if (visibleCount <= 0)
-            {
-                if (!drawViaRenderFeature && _worldState.ChunkCount > 0 && !_warnedVisibleZero)
-                {
-                    _warnedVisibleZero = true;
-                    int sampleSlots = Mathf.Min(5, _worldState.MaxChunks);
-                    var msg = new System.Text.StringBuilder("[GpuDrivenRenderer] Visible: 0 but ChunkCount > 0. Nothing will be drawn. First ").Append(sampleSlots).Append(" slots descriptor VertexCount: ");
-                    for (int i = 0; i < sampleSlots; i++)
-                    {
-                        var d = _worldState.GetDescriptor(i);
-                        msg.Append(i).Append("=").Append(d.VertexCount).Append(d.Flags != 0 ? "(F=" + d.Flags + ")" : "").Append(i < sampleSlots - 1 ? ", " : "");
-                    }
-                    msg.Append(". If all 0: GpuMesher did not produce geometry. Else: Cull may have synced late — check GpuCuller runs before Render.");
-                    Debug.LogWarning(msg.ToString());
-                }
-                return;
-            }
+            // No GetData: DrawProceduralIndirect uses DrawArgsBuffer; when 0 instances it no-ops. Avoids CPU stall.
 
             if (drawViaRenderFeature)
             {
@@ -142,15 +120,7 @@ namespace TerraVoxel.Voxel.GPU
                     instancedMaterial.shader.name.Contains("Instanced");
                 if (!ok)
                     Debug.LogWarning("[GpuDrivenRenderer] Instanced Material must use shader 'TerraVoxel/VoxelTriplanarURP_Instanced'. Current: " + (instancedMaterial?.shader?.name ?? "null"));
-                string coordInfo = "";
-                if (visibleCount > 0 && _worldState.VisibleChunkIndices != null)
-                {
-                    uint[] firstSlot = new uint[1];
-                    _worldState.VisibleChunkIndices.GetData(firstSlot, 0, 0, 1);
-                    var d = _worldState.GetDescriptor((int)firstSlot[0]);
-                    coordInfo = $"; first visible slot={firstSlot[0]} coord=({d.Coord.X},{d.Coord.Y},{d.Coord.Z}) (if coord=0,0,0 and camera elsewhere, terrain appears as distant clump)";
-                }
-                Debug.Log($"[GpuDrivenRenderer] Visible: {visibleCount}, ShadowCasting: {shadowCasting}{coordInfo}" + (visibleCount <= 0 ? " (nothing to draw – check Cull + meshing)" : ""));
+                Debug.Log($"[GpuDrivenRenderer] ChunkCount: {_worldState.ChunkCount}, ShadowCasting: {shadowCasting}");
             }
 
             int layer = LayerMask.NameToLayer(layerName);
@@ -187,6 +157,7 @@ namespace TerraVoxel.Voxel.GPU
             _properties.SetBuffer("_ChunkDescriptors", _worldState.ChunkDescriptors);
             _properties.SetBuffer("_MeshVertexBuffer", _worldState.MeshVertexBuffer);
             _properties.SetBuffer("_MeshNormalBuffer", _worldState.MeshNormalBuffer);
+#if UNITY_EDITOR
             if (debugLogDrawArgs && Time.time >= _debugLogNext)
             {
                 _debugLogNext = Time.time + 1f;
@@ -194,6 +165,7 @@ namespace TerraVoxel.Voxel.GPU
                 _worldState.DrawArgsBuffer.GetData(args);
                 Debug.Log($"[GpuDrivenRenderer] DrawArgs: {args[0]}, {args[1]}, {args[2]}, {args[3]} (vertexCount/instance, instanceCount, startVertex, startInstance)");
             }
+#endif
         }
 
         /// <summary>Record draw into a CommandBuffer (for URP RenderFeature compatibility mode). Call after Cull; returns true if draw was recorded.</summary>
@@ -222,9 +194,7 @@ namespace TerraVoxel.Voxel.GPU
                 _worldState.MeshNormalBuffer == null || _worldState.DrawArgsBuffer == null ||
                 _worldState.VisibleCountBuffer == null)
                 return false;
-            _worldState.VisibleCountBuffer.GetData(_visibleCountReadback, 0, 0, 1);
-            int visibleCount = (int)_visibleCountReadback[0];
-            if (visibleCount <= 0) return false;
+            if (_worldState.ChunkCount <= 0) return false;
             PrepareDrawBuffers();
             return true;
         }

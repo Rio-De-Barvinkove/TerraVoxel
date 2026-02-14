@@ -79,7 +79,7 @@ namespace TerraVoxel.Voxel.Streaming
 
             if (_ctx.MemoryPressureThresholdMb > 0)
             {
-#if UNITY_EDITOR || true
+#if UNITY_EDITOR
                 long memMb = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / (1024 * 1024);
                 if (memMb > _ctx.MemoryPressureThresholdMb)
                 {

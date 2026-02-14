@@ -51,7 +51,7 @@ namespace TerraVoxel.Voxel.Streaming
             int cacheCap = maxCachedChunks;
             if (memoryPressureThresholdMb > 0)
             {
-#if UNITY_EDITOR || true
+#if UNITY_EDITOR
                 long memMb = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / (1024 * 1024);
                 if (memMb > memoryPressureThresholdMb)
                     cacheCap = Mathf.Max(1, maxCachedChunks / 2);
@@ -264,7 +264,7 @@ namespace TerraVoxel.Voxel.Streaming
             int evictBudget = meshCacheEvictPerFrame > 0 ? meshCacheEvictPerFrame : int.MaxValue;
             if (memoryPressureThresholdMb > 0)
             {
-#if UNITY_EDITOR || true
+#if UNITY_EDITOR
                 long memMb = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / (1024 * 1024);
                 if (memMb > memoryPressureThresholdMb)
                     evictBudget *= 2;

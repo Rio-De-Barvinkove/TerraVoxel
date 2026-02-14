@@ -94,7 +94,6 @@ namespace TerraVoxel.Voxel.Streaming
 
             int activeSq = active * active;
             int inactiveSq = inactive * inactive;
-            float chunkWorldSize = manager.ChunkSize * VoxelConstants.VoxelSize;
 
             var activeChunks = manager.ActiveChunks;
             if (activeChunks == null) return;
@@ -115,7 +114,7 @@ namespace TerraVoxel.Voxel.Streaming
                         if (_physicsActive.Remove(coord))
                         {
                             if (chunk.IsGpuRendered)
-                                chunk.SetGpuBoxCollider(false, 0f);
+                                chunk.SetGpuColliderEnabled(false);
                             else
                                 chunk.SetColliderEnabled(false);
                         }
@@ -149,14 +148,13 @@ namespace TerraVoxel.Voxel.Streaming
 
                     if (chunk.IsGpuRendered)
                     {
-                        // Only enable BoxCollider if chunk has geometry (vertexCount > 0); empty/air GPU chunks get no collider.
                         bool hasGeometry = shouldEnable && chunk.Data.GpuSlot >= 0;
                         if (hasGeometry && manager.GpuWorldState != null)
                         {
                             var desc = manager.GpuWorldState.GetDescriptor(chunk.Data.GpuSlot);
                             hasGeometry = desc.VertexCount > 0;
                         }
-                        chunk.SetGpuBoxCollider(shouldEnable && hasGeometry, chunkWorldSize);
+                        chunk.SetGpuColliderEnabled(shouldEnable && hasGeometry);
                     }
                     else
                         chunk.SetColliderEnabled(shouldEnable);
@@ -190,7 +188,7 @@ namespace TerraVoxel.Voxel.Streaming
                 {
                     if (kvp.Value == null) continue;
                     if (kvp.Value.IsGpuRendered)
-                        kvp.Value.SetGpuBoxCollider(false, 0f);
+                        kvp.Value.SetGpuColliderEnabled(false);
                     else
                         kvp.Value.SetColliderEnabled(false);
                 }
@@ -205,7 +203,6 @@ namespace TerraVoxel.Voxel.Streaming
             if (manager == null || !manager.AddColliders) return;
             var activeChunks = manager.ActiveChunks;
             if (activeChunks == null) return;
-            float chunkWorldSize = manager.ChunkSize * VoxelConstants.VoxelSize;
             var gpuWorldState = manager.GpuWorldState;
             lock (_stateLock)
             {
@@ -217,7 +214,7 @@ namespace TerraVoxel.Voxel.Streaming
                     {
                         bool hasGeometry = kvp.Value.Data.GpuSlot >= 0 && gpuWorldState != null
                             && gpuWorldState.GetDescriptor(kvp.Value.Data.GpuSlot).VertexCount > 0;
-                        kvp.Value.SetGpuBoxCollider(hasGeometry, hasGeometry ? chunkWorldSize : 0f);
+                        kvp.Value.SetGpuColliderEnabled(hasGeometry);
                     }
                     else
                         kvp.Value.SetColliderEnabled(true);

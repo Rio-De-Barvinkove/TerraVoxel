@@ -1,5 +1,6 @@
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
+using UnityEngine.Profiling;
 using TerraVoxel.Voxel.GPU;
 using UnityEngine;
 
@@ -32,10 +33,10 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 if (chunk.IsGpuRendered)
                 {
-                    float chunkWorldSize = worldGen.ChunkSize * VoxelConstants.VoxelSize;
-                    bool hasGeometry = chunk.Data.GpuSlot >= 0 && _gpuWorldState != null
+                    bool hasMesh = chunk.Data.GpuSlot >= 0 && _gpuWorldState != null
                         && _gpuWorldState.GetDescriptor(chunk.Data.GpuSlot).VertexCount > 0;
-                    chunk.SetGpuBoxCollider(hasGeometry, hasGeometry ? chunkWorldSize : 0f);
+                    if (hasMesh)
+                        chunk.SetGpuColliderEnabled(true);
                 }
                 else
                     chunk.SetColliderEnabled(true);
@@ -60,21 +61,38 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
-        internal void SpawnChunk(ChunkCoord coord, bool preload = false)
+        internal void SpawnChunk(ChunkCoord coord, bool preload = false, int lodStepOverride = 0)
         {
-            if (useGpuPipeline && _gpuWorldState != null && _gpuChunkGenerator != null && _gpuChunkGenerator.IsValid)
+            bool useCpuPath = false;
+            if (useGpuPipeline && dualPipelineCpuRadius > 0 && player != null && worldGen != null)
             {
+                var center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
+                int dx = Mathf.Abs(coord.X - center.X);
+                int dz = Mathf.Abs(coord.Z - center.Z);
+                int dist = Mathf.Max(dx, dz);
+                useCpuPath = dist <= dualPipelineCpuRadius;
+            }
+
+            if (useGpuPipeline && !useCpuPath && _gpuWorldState != null && _gpuChunkGenerator != null && _gpuChunkGenerator.IsValid)
+            {
+                Profiler.BeginSample("SpawnGpu");
                 SpawnChunkGpu(coord, preload);
+                Profiler.EndSample();
                 return;
             }
 
-            if (useGpuPipeline && !_warnedGpuNotInitialized)
+            if (useGpuPipeline && !useCpuPath && !_warnedGpuNotInitialized)
             {
                 _warnedGpuNotInitialized = true;
                 Debug.LogWarning("[ChunkManager] GPU pipeline enabled but GPU not initialized (WorldGen or compute shaders missing in Awake). Spawning CPU chunks. Assign WorldGen and compute shaders before Play.");
             }
 
-            if (!EnsurePrefab() || chunkPrefab == null) return;
+            Profiler.BeginSample("SpawnChunk");
+            if (!EnsurePrefab() || chunkPrefab == null)
+            {
+                Profiler.EndSample();
+                return;
+            }
             if (_pool == null) _pool = new ChunkPool(chunkPrefab, transform);
             if (_generator == null) _generator = new ChunkGenerator();
 
@@ -124,18 +142,20 @@ namespace TerraVoxel.Voxel.Streaming
             bool applySafeSpawn = !loadedFromCache && !loadedSnapshot && _safeSpawnInitialized && worldGen.EnableSafeSpawn && !preload;
             bool applyDelta = !loadedFromCache && !loadedSnapshot && hybridSave != null;
 
+            int initialLod = lodStepOverride > 0 ? lodStepOverride : 1;
             if (loadedFromCache || loadedSnapshot)
             {
                 if (!loadedFromCache && hybridSave == null && modManager != null)
                     modManager.ApplyModsToChunk(coord, chunk.Data);
 
-                if (!ScheduleMeshForChunk(coord, spawnStart, 1))
+                if (!ScheduleMeshForChunk(coord, spawnStart, initialLod))
                     QueueRemesh(coord);
             }
             else
             {
-                ScheduleGenJob(coord, chunk, spawnStart, applySafeSpawn, applyDelta);
+                ScheduleGenJob(coord, chunk, spawnStart, applySafeSpawn, applyDelta, lodStepOverride);
             }
+            Profiler.EndSample();
         }
 
         void SpawnChunkGpu(ChunkCoord coord, bool preload)
@@ -158,6 +178,7 @@ namespace TerraVoxel.Voxel.Streaming
                 return;
             }
 
+            // GPU spawn order: gen (or load) → SyncVoxelSlot if gen → mods → SafeSpawn → MeshChunk (updates descriptor.VertexCount) → ApplyGpuMeshRef → collider only if VertexCount>0. No CPU fallback.
             float chunkWorldSize = worldGen.ChunkSize * VoxelConstants.VoxelSize;
             Chunk chunk = null;
             bool addedToActive = false;
@@ -165,6 +186,7 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 chunk = _pool.Get();
                 chunk.Initialize(coord, chunkWorldSize);
+                chunk.SetGpuMeshCollider(null);
                 if (srpBatchingConfig != null)
                     srpBatchingConfig.ApplyToChunk(chunk);
                 else if (voxelMaterial != null)
@@ -217,7 +239,7 @@ namespace TerraVoxel.Voxel.Streaming
                     chunk.Data.GpuSlot = slot;
                     chunk.Data.GpuOffset = _gpuWorldState.GetVoxelOffset(slot);
                     _gpuChunkGenerator.ScheduleGeneration(_gpuWorldState, coord, slot, worldGen, noiseStack);
-                    _gpuWorldState.SyncVoxelSlot(slot);
+                    // No SyncVoxelSlot: Gen and Mesh dispatch in same frame; GPU executes in order, MeshChunk runs after gen. Avoids CPU stall.
                 }
                 if (modManager != null)
                 {
@@ -238,16 +260,21 @@ namespace TerraVoxel.Voxel.Streaming
                 chunk.Data.ValidateSize(worldGen.ChunkSize);
                 _active[coord] = chunk;
                 addedToActive = true;
+                // Disables chunk Renderer (draw is via GpuDrivenRenderer). If GPU render is off, chunks are invisible but colliders may still be set below.
                 chunk.ApplyGpuMeshRef(slot);
 
-                // Only add collider if chunk has geometry (vertexCount > 0); empty/air chunks get no collider.
+                // Collider: async readback via GpuColliderReadbackQueue; MeshCollider only when ready.
                 if (addColliders)
                 {
-                    var desc = _gpuWorldState.GetDescriptor(slot);
-                    if (desc.VertexCount > 0)
-                        chunk.SetGpuBoxCollider(true, chunkWorldSize);
-                    else
-                        chunk.SetGpuBoxCollider(false, 0f);
+                    if (_gpuColliderReadbackQueue != null && _gpuMesher != null && _gpuMesher.FaceCounter != null)
+                    {
+                        var desc = _gpuWorldState.GetDescriptor(slot);
+                        uint maxFacesForSlot = (uint)(_gpuWorldState.MaxVerticesPerChunk / 6);
+                        int meshVertexOffset = _gpuWorldState.GetMeshVertexOffset(slot);
+                        _gpuColliderReadbackQueue.RequestColliderAsync(
+                            _gpuWorldState, _gpuMesher.FaceCounter, slot, coord, chunk,
+                            maxFacesForSlot, meshVertexOffset, worldGen.ChunkSize, VoxelConstants.VoxelSize, desc.Flags);
+                    }
                 }
 
                 // GPU path does not use integration queue; clear safe-spawn wait when anchor chunk is spawned.

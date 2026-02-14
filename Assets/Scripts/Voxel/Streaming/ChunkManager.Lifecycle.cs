@@ -1,4 +1,5 @@
 using TerraVoxel.Voxel.Core;
+using TerraVoxel.Voxel.Lod;
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
@@ -6,7 +7,7 @@ namespace TerraVoxel.Voxel.Streaming
     /// <summary>Partial: MaintainRadius, ProcessFarRangeLod, ProcessPending, ProcessPreload. Main-thread only.</summary>
     public partial class ChunkManager
     {
-        /// <summary>Maintains load/preload/keep radius: fills pending/preload, builds remove candidates, queues removal and far-range LOD. Requires worldGen and player. Uses nested loops over radius and ColumnChunks.</summary>
+        /// <summary>Maintains load/preload/keep radius: fills pending/preload, builds remove candidates, queues removal and far-range LOD. Requires worldGen and player. Uses nested loops over radius and ColumnChunks, or ChunkOctree when enableOctreeLod.</summary>
         internal void MaintainRadius()
         {
             if (worldGen == null || player == null) return;
@@ -21,35 +22,56 @@ namespace TerraVoxel.Voxel.Streaming
             }
             ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
             MaybeDropWork(center);
-            if (ShouldRebuildPending(center))
+            if (!enableOctreeLod && ShouldRebuildPending(center))
                 RebuildPendingQueue(center);
             RepopulateViewConeFromPendingSet(center);
             int effectivePreloadRadius = EffectivePreloadRadius();
 
-            for (int dz = -loadRadius; dz <= loadRadius; dz++)
+            if (enableOctreeLod)
             {
-                for (int dx = -loadRadius; dx <= loadRadius; dx++)
+                if (_octreeLodManager == null)
+                    _octreeLodManager = new ChunkOctreeLodManager(loadRadius, worldGen.ColumnChunks, 2f, maxOctreeNodeCreationsPerFrame);
+                _octreeLodManager.CollectLeaves(center, c => _active.ContainsKey(c), _pendingSet, _pendingLodStep, replacePending: true, pendingQueueCap: pendingQueueCap);
+                InvalidatePendingHeap();
+                foreach (var coord in new System.Collections.Generic.List<ChunkCoord>(_preloaded))
                 {
-                    for (int dy = 0; dy < worldGen.ColumnChunks; dy++)
+                    if (_active.TryGetValue(coord, out var existing))
+                        ActivatePreloadedChunk(coord, existing);
+                }
+                if (viewCone != null && viewCone.Enabled && !UseGpuPipeline)
+                {
+                    viewCone.Clear();
+                    foreach (var coord in _pendingSet)
+                        viewCone.EnqueueWithPriority(coord, center, player);
+                }
+            }
+            else
+            {
+                for (int dz = -loadRadius; dz <= loadRadius; dz++)
+                {
+                    for (int dx = -loadRadius; dx <= loadRadius; dx++)
                     {
-                        var coord = new ChunkCoord(center.X + dx, dy, center.Z + dz);
-                        if (_active.TryGetValue(coord, out var existing))
+                        for (int dy = 0; dy < worldGen.ColumnChunks; dy++)
                         {
-                            if (_preloaded.Contains(coord))
-                                ActivatePreloadedChunk(coord, existing);
-                            continue;
-                        }
-                        if (_pendingSet.Contains(coord)) continue;
-                        if (pendingQueueCap > 0 && PendingCount >= pendingQueueCap)
-                            DropOnePendingOldest(center);
-                        if (viewCone != null && viewCone.Enabled && !UseGpuPipeline)
-                        {
-                            if (_pendingSet.Add(coord))
-                                viewCone.EnqueueWithPriority(coord, center, player);
-                        }
-                        else
-                        {
-                            _pendingSet.Add(coord);
+                            var coord = new ChunkCoord(center.X + dx, dy, center.Z + dz);
+                            if (_active.TryGetValue(coord, out var existing))
+                            {
+                                if (_preloaded.Contains(coord))
+                                    ActivatePreloadedChunk(coord, existing);
+                                continue;
+                            }
+                            if (_pendingSet.Contains(coord)) continue;
+                            if (pendingQueueCap > 0 && PendingCount >= pendingQueueCap)
+                                DropOnePendingOldest(center);
+                            if (viewCone != null && viewCone.Enabled && !UseGpuPipeline)
+                            {
+                                if (_pendingSet.Add(coord))
+                                    viewCone.EnqueueWithPriority(coord, center, player);
+                            }
+                            else
+                            {
+                                _pendingSet.Add(coord);
+                            }
                         }
                     }
                 }
@@ -131,22 +153,23 @@ namespace TerraVoxel.Voxel.Streaming
             if (player == null || worldGen == null) return;
             ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
 
+            int maxSpawns = useGpuPipeline ? Mathf.Min(maxSpawnsPerFrame, gpuMaxSpawnsPerFrame) : maxSpawnsPerFrame;
             int spawned = 0;
-            while ((PendingCount > 0 || PendingSetCount > 0) && spawned < maxSpawnsPerFrame)
+            while ((PendingCount > 0 || PendingSetCount > 0) && spawned < maxSpawns)
             {
                 if (BudgetExceeded()) break;
-                if (useGpuPipeline && _gpuWorldState != null)
-                {
-                    if (_gpuWorldState.ChunkCount >= gpuMaxChunks) break;
-                }
-                else if (_genJobs.Count >= CurrentMaxGenJobsInFlight)
+                if (useGpuPipeline && _gpuWorldState != null && _gpuWorldState.ChunkCount >= _gpuWorldState.MaxChunks)
+                    break;
+                if (_genJobs.Count >= CurrentMaxGenJobsInFlight)
                     break;
                 if (!TryDequeuePending(center, out var coord))
                     break;
                 if (!IsWithinLoadRadius(coord, center, loadRadius)) continue;
                 if (_active.ContainsKey(coord)) continue;
-                // View cone only affects dequeue order (priority); always spawn dequeued coord to avoid 0 spawns when camera looks away.
-                SpawnChunk(coord);
+                int lodStepOverride = _pendingLodStep.TryGetValue(coord, out var step) ? step : 0;
+                if (lodStepOverride > 0)
+                    _pendingLodStep.Remove(coord);
+                SpawnChunk(coord, preload: false, lodStepOverride: lodStepOverride);
                 spawned++;
             }
             _spawnedLastFrame = spawned;
@@ -169,7 +192,7 @@ namespace TerraVoxel.Voxel.Streaming
                 if (BudgetExceeded()) break;
                 if (useGpuPipeline && _gpuWorldState != null)
                 {
-                    if (_gpuWorldState.ChunkCount >= gpuMaxChunks) break;
+                    if (_gpuWorldState.ChunkCount >= _gpuWorldState.MaxChunks) break;
                 }
                 else if (_genJobs.Count >= CurrentMaxGenJobsInFlight)
                     break;

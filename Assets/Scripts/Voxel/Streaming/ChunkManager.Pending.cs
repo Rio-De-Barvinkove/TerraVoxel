@@ -36,6 +36,7 @@ namespace TerraVoxel.Voxel.Streaming
         {
             _pending.Clear();
             _pendingSet.Clear();
+            _pendingLodStep.Clear();
             if (viewCone != null && viewCone.Enabled)
                 viewCone.Clear();
             _pendingDistanceHeap.Clear();
@@ -62,6 +63,13 @@ namespace TerraVoxel.Voxel.Streaming
                     }
                 }
             }
+        }
+
+        /// <summary>Invalidates the pending distance heap so it will be rebuilt on next TryFindClosestPending. Call when _pendingSet was replaced (e.g. from octree).</summary>
+        internal void InvalidatePendingHeap()
+        {
+            _pendingDistanceHeap.Clear();
+            _pendingDequeueCenter = default;
         }
 
         /// <summary>When viewCone is enabled but heap is empty and _pendingSet has entries, repopulates viewCone from _pendingSet so dequeue can progress. Call once per frame from MaintainRadius.</summary>
