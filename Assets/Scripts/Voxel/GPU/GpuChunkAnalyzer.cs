@@ -1,3 +1,4 @@
+/*
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.GPU
@@ -79,7 +80,8 @@ namespace TerraVoxel.Voxel.GPU
                 int remaining = totalVoxels - voxelStart;
                 int groupsThisBatch = Mathf.Min(MaxGroupsPerDispatch, Mathf.CeilToInt((float)remaining / ThreadsPerGroup));
                 if (groupsThisBatch <= 0) break;
-                _shader.SetInt("VoxelStart_", voxelStart);
+                int vStart = voxelStart;
+                _shader.SetInt("VoxelStart_", vStart);
                 _shader.Dispatch(_kernelAnalyzeChunkCount, groupsThisBatch, 1, 1);
             }
 
@@ -102,5 +104,19 @@ namespace TerraVoxel.Voxel.GPU
             _airCount?.Release();
             _airCount = null;
         }
+    }
+}
+*/
+
+using UnityEngine;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public sealed class GpuChunkAnalyzer
+    {
+        public bool IsValid => false;
+        public void Initialize(UnityEngine.ComputeShader shader) { }
+        public void ScheduleAnalysis(GpuWorldState state) { }
+        public void Dispose() { }
     }
 }

@@ -380,21 +380,21 @@ MonoBehaviour:
   chunkPrefab: {fileID: 2085738739}
   worldGen: {fileID: 11400000, guid: 182e37385ea739840907a153355f5e7d, type: 2}
   noiseStack: {fileID: 11400000, guid: 7be5acb9b4187354ea266e68d3f3b281, type: 2}
-  loadRadius: 20
-  unloadRadius: 28
+  loadRadius: 10
+  unloadRadius: 11
+  verticalRadius: 2
   addColliders: 1
-  physicsOptimizer: {fileID: 448214055}
-  maxSpawnsPerFrame: 19
-  maxRemeshPerFrame: 36
-  maxRemovalsPerFrame: 17
-  scaleJobsByProcessorCount: 1
+  maxSpawnsPerFrame: 12
+  maxRemeshPerFrame: 23
+  maxRemovalsPerFrame: 12
+  scaleJobsByProcessorCount: 0
   maxGenJobsInFlight: 16
   maxMeshJobsInFlight: 16
   maxIntegrationsPerFrame: 16
-  dynamicIntegrationLimit: 1
+  dynamicIntegrationLimit: 0
   maxIntegrationQueueSize: 8000
   streamingPaused: 0
-  enablePreload: 1
+  enablePreload: 0
   preloadRadius: 2
   maxPreloadsPerFrame: 16
   removalBudgetMs: 3
@@ -404,24 +404,20 @@ MonoBehaviour:
   workDropCooldown: 0.4
   pendingQueueCap: 16384
   pendingResetDistance: 12
-  viewCone: {fileID: 448214056}
   enableFullLod: 0
   initialLodFromDistance: 0
   enableFarRangeLod: 0
   farRangeRadius: 40
-  lodSettings: {fileID: 11400000, guid: 868f81b94f723684ea3dd726391b24e2, type: 2}
   maxLodTransitionsPerFrame: 80
   lodTransitionCooldown: 0.2
   maxSvoBuildsPerFrame: 20
   enableLodTransitionLog: 0
   occlusionCuller: {fileID: 448214058}
-  useGpuPipeline: 1
-  gpuPipelineComputeAssets: {fileID: 0}
+  useGpuPipeline: 0
   voxelGenerationCompute: {fileID: 7200000, guid: a33c9242cca3d7f4594bb598b6dfbf58, type: 3}
   chunkAnalysisCompute: {fileID: 7200000, guid: d3e2a2a9c9946fb4282007c69646940e, type: 3}
   chunkCullingCompute: {fileID: 7200000, guid: 0053e47e66c56ad499ad20082a6dbdcb, type: 3}
   voxelMeshingCompute: {fileID: 7200000, guid: 04709ffb7c7bd7343b32ebd369757d32, type: 3}
-  gpuDrivenRenderer: {fileID: 448214060}
   gpuMaxChunks: 12579
   maxColliderReadbacksPerFrame: 2
   gpuMaxSpawnsPerFrame: 5
@@ -429,10 +425,9 @@ MonoBehaviour:
   enableOctreeLod: 0
   maxOctreeNodeCreationsPerFrame: 50
   gpuChunkAnalyzerEnabled: 0
-  gpuFrustumCulling: 1
+  gpuFrustumCulling: 0
   gpuFrustumMarginScale: 6
-  gpuOcclusionCulling: 1
-  svoManager: {fileID: 448214057}
+  gpuOcclusionCulling: 0
   streamingBudget:
     enabled: 0
     maxMsPerFrame: 3
@@ -440,15 +435,12 @@ MonoBehaviour:
   srpBatchingConfig: {fileID: 448214059}
   voxelMaterial: {fileID: 2100000, guid: 9805a1810d2a6b741b09cd565a7136dc, type: 2}
   voxelMaterialLibrary: {fileID: 11400000, guid: e1c398cf33139d64998e86159899320f, type: 2}
-  saveManager: {fileID: 448214051}
-  modManager: {fileID: 448214053}
-  hybridSave: {fileID: 448214054}
-  enableGenSlicing: 1
+  enableGenSlicing: 0
   genSliceCount: 4
   enableDataCache: 1
-  maxCachedChunks: 1000
-  maxCacheOpsPerFrame: 4
-  enableMeshCache: 1
+  maxCachedChunks: 12000
+  maxCacheOpsPerFrame: 10
+  enableMeshCache: 0
   maxMeshCacheEntries: 1000
   meshCacheEvictPerFrame: 4
   enableReverseLod: 0
@@ -468,7 +460,7 @@ MonoBehaviour:
   maxRequestRemeshNeighborsDepth: 1
   enableEdgeOnlyRemesh: 1
   maxFaceRemeshPerFrame: 1
-  enableSeamSkirts: 1
+  enableSeamSkirts: 0
   seamSkirtOffset: 0.002
 --- !u!4 &448214048
 Transform:
@@ -549,26 +541,11 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 448214046}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: fd2e610892186294a9109a224eedeae3, type: 3}
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Save.ChunkSaveManager
-  worldGen: {fileID: 11400000, guid: 182e37385ea739840907a153355f5e7d, type: 2}
-  worldIdOverride: 
-  useSeedAsWorldId: 1
-  rootFolderName: Worlds
-  loadOnSpawn: 1
-  saveOnUnload: 1
-  saveOnDestroy: 1
-  compress: 1
-  useRle: 0
-  compressionLevel: 1
-  saveDensity: 0
-  asyncWrite: 1
-  useRegionFolders: 1
-  regionSize: 32
-  workerJoinTimeoutMs: 200
 --- !u!114 &448214052
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -576,35 +553,11 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 448214046}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: dc97558439fe6e14ea6269b65e3beb8d, type: 3}
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Save.VoxelModDebugInput
-  modManager: {fileID: 448214053}
-  chunkManager: {fileID: 0}
-  rayCamera: {fileID: 0}
-  rangeOrigin: {fileID: 0}
-  toggleKey: 98
-  modeToggleKey: 118
-  useChunkDistance: 1
-  maxDistanceChunks: 2
-  maxDistance: 8
-  hitMask:
-    serializedVersion: 2
-    m_Bits: 4294967295
-  brushShape: 0
-  digBrushSize: 1
-  buildBrushSize: 1
-  brushMin: 1
-  brushMax: 10
-  rectangleHeightScale: 0.5
-  buildMaterial: 1
-  scrollStep: 1
-  showPreview: 1
-  breakColor: {r: 1, g: 0.35, b: 0.2, a: 1}
-  buildColor: {r: 0.3, g: 0.8, b: 1, a: 1}
-  outlinePadding: 0.001
 --- !u!114 &448214053
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -612,27 +565,11 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 448214046}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 858e0cf25e061f044be537772c116cb8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Save.ChunkModManager
-  worldGen: {fileID: 11400000, guid: 182e37385ea739840907a153355f5e7d, type: 2}
-  chunkManager: {fileID: 448214047}
-  worldIdOverride: 
-  useSeedAsWorldId: 1
-  rootFolderName: Worlds
-  modsFolderName: mods
-  loadOnSpawn: 1
-  saveOnUnload: 1
-  saveOnDestroy: 1
-  compress: 1
-  useRle: 0
-  asyncWrite: 1
-  useRegionFolders: 1
-  regionSize: 32
-  unloadModsOnChunkUnload: 1
-  workerJoinTimeoutMs: 200
 --- !u!114 &448214054
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -640,21 +577,11 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 448214046}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 00d5164c4b527cd42b0cc34c2cdc79f2, type: 3}
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Save.ChunkHybridSaveManager
-  worldGen: {fileID: 11400000, guid: 182e37385ea739840907a153355f5e7d, type: 2}
-  snapshotManager: {fileID: 448214051}
-  modManager: {fileID: 448214053}
-  chunkManager: {fileID: 0}
-  deltaPromoteThreshold: 0.3
-  promoteOnGeneratorVersionChange: 1
-  promoteOnSimulatedData: 1
-  promoteOnStructuralInvalid: 1
-  deleteDeltaWhenSnapshotExists: 1
-  alwaysSaveSnapshots: 1
 --- !u!114 &448214055
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -662,16 +589,11 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 448214046}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: 32e890baec34417499d0d32517129cf4, type: 3}
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Streaming.ChunkPhysicsOptimizer
-  enableOptimization: 1
-  activeRadius: 5
-  inactiveRadius: 7
-  includeVerticalDistance: 1
-  disablePreloaded: 0
 --- !u!114 &448214056
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -679,25 +601,11 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 448214046}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: f3b41144b1efcc94396a2f23616761db, type: 3}
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Streaming.ChunkViewConePrioritizer
-  enable: 1
-  distanceOnly: 1
-  viewTransform: {fileID: 983036173}
-  useMainCamera: 1
-  ignoreVertical: 1
-  includeVerticalDistance: 0
-  coneHalfAngleDeg: 70
-  useVisualWeights: 1
-  dotWeight: 1
-  distanceWeight: 1
-  surfaceBonus: 1.5
-  heightBonus: 0.75
-  undergroundPenalty: 0.5
-  worldGen: {fileID: 0}
 --- !u!114 &448214057
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -705,15 +613,11 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 448214046}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: f663114938c4fe542b1d9c1866041e56, type: 3}
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Svo.SvoManager
-  enableSvo: 1
-  maxCacheEntries: 256
-  evictPerFrame: 4
-  useGpuRaymarch: 0
 --- !u!114 &448214058
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -727,27 +631,10 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Occlusion.ChunkOcclusionCuller
   enableOcclusion: 1
-  frustumCulling: 1
-  raycastOcclusion: 1
-  maxChecksPerFrame: 1024
-  recheckOccludedPerFrame: 64
-  occluderMask:
-    serializedVersion: 2
-    m_Bits: 4294967295
-  occluderLayerName: Terrain
-  raycastPadding: 0.1
-  scalePaddingByBounds: 0
-  paddingScaleFactor: 1
-  ignorePreloaded: 1
-  cullPreloaded: 1
-  maxRayDist: 200
+  maxChecksPerFrame: 10000
+  recheckOccludedPerFrame: 0
   tickBudgetMs: 5
-  useAdaptiveBudget: 0
-  adaptiveTargetMs: 2
-  adaptiveMinChecks: 32
-  adaptiveMaxChecks: 512
-  useCoarseSphereCheck: 1
-  useGpu: 1
+  cullPreloaded: 0
 --- !u!114 &448214059
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -769,18 +656,11 @@ MonoBehaviour:
   m_PrefabInstance: {fileID: 0}
   m_PrefabAsset: {fileID: 0}
   m_GameObject: {fileID: 448214046}
-  m_Enabled: 1
+  m_Enabled: 0
   m_EditorHideFlags: 0
   m_Script: {fileID: 11500000, guid: fc00d89385cfea34fa05ea2ccefd46b7, type: 3}
   m_Name: 
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.GPU.GpuDrivenRenderer
-  instancedMaterial: {fileID: 2100000, guid: 281c2c71e6c4cc54e867d874a1403e80, type: 2}
-  voxelMaterialLibrary: {fileID: 11400000, guid: e1c398cf33139d64998e86159899320f, type: 2}
-  layerName: Default
-  shadowCasting: 0
-  debugLog: 0
-  debugLogDrawArgs: 0
-  drawViaRenderFeature: 0
 --- !u!4 &492199355 stripped
 Transform:
   m_CorrespondingSourceObject: {fileID: 2884546045553303299, guid: 691d201409042b143af4574240386e30, type: 3}

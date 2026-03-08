@@ -1,3 +1,4 @@
+/*
 using System.Collections.Generic;
 using UnityEngine;
 
@@ -38,6 +39,21 @@ namespace TerraVoxel.Voxel.GPU
             return (slot, gen);
         }
 
+        /// <summary>Try to allocate a slot. Returns true and (slot, generation) on success; false and (-1, 0) when full. Use instead of Allocate to avoid exceptions in production.</summary>
+        public bool TryAllocate(out int slot, out uint generation)
+        {
+            if (_freeList.Count == 0)
+            {
+                slot = -1;
+                generation = 0;
+                return false;
+            }
+            slot = _freeList.Pop();
+            generation = _generationIds[slot];
+            _allocatedCount++;
+            return true;
+        }
+
         /// <summary>Free a slot. Increments generation so previous users detect use-after-free.</summary>
         public void Free(int slot)
         {
@@ -64,5 +80,25 @@ namespace TerraVoxel.Voxel.GPU
             if (slot < 0 || slot >= _maxSlots) return 0;
             return _generationIds[slot];
         }
+    }
+}
+*/
+
+using System.Collections.Generic;
+using UnityEngine;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public sealed class GpuSlotAllocator
+    {
+        public GpuSlotAllocator(int maxSlots) { }
+        public int MaxSlots => 0;
+        public int AllocatedCount => 0;
+        public int FreeCount => 0;
+        public (int slot, uint generation) Allocate() => (-1, 0);
+        public bool TryAllocate(out int slot, out uint generation) { slot = -1; generation = 0; return false; }
+        public void Free(int slot) { }
+        public bool IsValid(int slot, uint generation) => false;
+        public uint GetGeneration(int slot) => 0;
     }
 }

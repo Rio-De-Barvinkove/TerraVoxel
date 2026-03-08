@@ -1,3 +1,4 @@
+/* CPU-only rollback: весь вміст закоментовано, залишено stub. 
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
@@ -109,3 +110,5 @@ namespace TerraVoxel.Voxel.Streaming
         }
     }
 }
+
+*/

@@ -1,3 +1,4 @@
+/*
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.GPU
@@ -22,5 +23,20 @@ namespace TerraVoxel.Voxel.GPU
             chunkAnalysis != null &&
             chunkCulling != null &&
             voxelMeshing != null;
+    }
+}
+*/
+
+using UnityEngine;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public class GpuPipelineComputeAssets : ScriptableObject
+    {
+        public ComputeShader voxelGeneration;
+        public ComputeShader chunkAnalysis;
+        public ComputeShader chunkCulling;
+        public ComputeShader voxelMeshing;
+        public bool HasAll => voxelGeneration != null && chunkAnalysis != null && chunkCulling != null && voxelMeshing != null;
     }
 }

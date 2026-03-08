@@ -24,23 +24,15 @@ namespace TerraVoxel.Voxel.Streaming
         {
             QueueRemesh(coord);
             if (!includeNeighbors || _requestRemeshDepth >= maxRequestRemeshNeighborsDepth) return;
-            int columnChunks = ColumnChunks;
-            if (columnChunks <= 0) return;
             _requestRemeshDepth++;
             try
             {
-                var n = new ChunkCoord(coord.X + 1, coord.Y, coord.Z);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-                n = new ChunkCoord(coord.X - 1, coord.Y, coord.Z);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-                n = new ChunkCoord(coord.X, coord.Y + 1, coord.Z);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-                n = new ChunkCoord(coord.X, coord.Y - 1, coord.Z);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-                n = new ChunkCoord(coord.X, coord.Y, coord.Z + 1);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
-                n = new ChunkCoord(coord.X, coord.Y, coord.Z - 1);
-                if (n.Y >= 0 && n.Y < columnChunks) QueueRemesh(n);
+                QueueRemesh(new ChunkCoord(coord.X + 1, coord.Y, coord.Z));
+                QueueRemesh(new ChunkCoord(coord.X - 1, coord.Y, coord.Z));
+                QueueRemesh(new ChunkCoord(coord.X, coord.Y + 1, coord.Z));
+                QueueRemesh(new ChunkCoord(coord.X, coord.Y - 1, coord.Z));
+                QueueRemesh(new ChunkCoord(coord.X, coord.Y, coord.Z + 1));
+                QueueRemesh(new ChunkCoord(coord.X, coord.Y, coord.Z - 1));
             }
             finally { _requestRemeshDepth--; }
         }
@@ -50,16 +42,19 @@ namespace TerraVoxel.Voxel.Streaming
         void ApplyChunkLayer(Chunk chunk)
         {
             if (chunk == null) return;
-            if (string.IsNullOrWhiteSpace(chunkLayerName)) return;
-            int layer = LayerMask.NameToLayer(chunkLayerName);
-            if (layer < 0)
+            int layer = 0;
+            if (!string.IsNullOrWhiteSpace(chunkLayerName))
             {
-                if (!_warnedInvalidChunkLayer)
+                layer = LayerMask.NameToLayer(chunkLayerName);
+                if (layer < 0)
                 {
-                    _warnedInvalidChunkLayer = true;
-                    Debug.LogWarning($"[ChunkManager] Chunk layer '{chunkLayerName}' not found. Create the layer in Tags and Layers or use a valid name.");
+                    if (!_warnedInvalidChunkLayer)
+                    {
+                        _warnedInvalidChunkLayer = true;
+                        Debug.LogWarning($"[ChunkManager] Chunk layer '{chunkLayerName}' not found. Using Default (0). Create the layer in Tags and Layers or chunks may not render.");
+                    }
+                    layer = 0;
                 }
-                return;
             }
             SetLayerRecursively(chunk.transform, layer, 0);
         }
@@ -88,8 +83,6 @@ namespace TerraVoxel.Voxel.Streaming
         void RebuildNeighborsInner(ChunkCoord coord)
         {
             if (worldGen == null) return;
-            int columnChunks = worldGen.ColumnChunks;
-            if (columnChunks <= 0) return;
             var neighbors = new (ChunkCoord coord, int faceIndex)[]
             {
                 (new ChunkCoord(coord.X + 1, coord.Y, coord.Z), 0),
@@ -102,7 +95,6 @@ namespace TerraVoxel.Voxel.Streaming
 
             foreach (var (neighbor, faceIndex) in neighbors)
             {
-                if (neighbor.Y < 0 || neighbor.Y >= columnChunks) continue;
                 if (!_active.ContainsKey(neighbor)) continue;
                 if (IsChunkGenerating(neighbor)) continue;
                 if (_meshJobs.ContainsKey(neighbor)) continue;
@@ -179,22 +171,18 @@ namespace TerraVoxel.Voxel.Streaming
                 _neighborDirtyFaces.Remove(coord);
                 _faceRemeshSet.Remove(coord);
             }
-            if (svoManager != null)
-                svoManager.ReleaseForChunk(coord);
+            /* if (svoManager != null)
+                svoManager.ReleaseForChunk(coord); */
             if (enableMeshCache)
             {
                 ReleaseMeshCacheForChunk(coord);
-                int colChunks = worldGen != null ? worldGen.ColumnChunks : 1;
                 var n = new[] {
                     new ChunkCoord(coord.X + 1, coord.Y, coord.Z), new ChunkCoord(coord.X - 1, coord.Y, coord.Z),
                     new ChunkCoord(coord.X, coord.Y + 1, coord.Z), new ChunkCoord(coord.X, coord.Y - 1, coord.Z),
                     new ChunkCoord(coord.X, coord.Y, coord.Z + 1), new ChunkCoord(coord.X, coord.Y, coord.Z - 1)
                 };
                 for (int i = 0; i < 6; i++)
-                {
-                    if (n[i].Y >= 0 && n[i].Y < colChunks)
-                        ReleaseMeshCacheForChunk(n[i]);
-                }
+                    ReleaseMeshCacheForChunk(n[i]);
             }
             _remeshSet.Add(coord);
         }

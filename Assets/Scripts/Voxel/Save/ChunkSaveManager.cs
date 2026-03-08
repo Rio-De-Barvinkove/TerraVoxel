@@ -1,3 +1,4 @@
+/* CPU-only rollback: ChunkSaveManager залежить від ChunkSaveBinary, ChunkSaveMode (закоментовані)
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -158,7 +159,7 @@ namespace TerraVoxel.Voxel.Save
             if (asyncWrite)
             {
                 _queue.Enqueue(request);
-                _signal.Set();
+                _signal?.Set();
             }
             else
             {
@@ -333,4 +334,4 @@ namespace TerraVoxel.Voxel.Save
         }
     }
 }
-
+*/

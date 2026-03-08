@@ -1,3 +1,4 @@
+/*
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.GPU;
@@ -22,7 +23,7 @@ namespace TerraVoxel.Voxel.Lod
             if (_ctx.LodSettings == null) return;
             if (_ctx.Player == null || _ctx.WorldGen == null) return;
 
-            ChunkCoord center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize);
+            ChunkCoord center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize, _ctx.WorldGen.VoxelSize);
             int transitions = 0;
             int svoBuilds = 0;
             double now = Time.realtimeSinceStartupAsDouble;
@@ -187,7 +188,7 @@ namespace TerraVoxel.Voxel.Lod
             if (_ctx.MaxLodUpgradesPerFrame <= 0) return;
             if (_ctx.Player == null || _ctx.WorldGen == null) return;
 
-            ChunkCoord center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize);
+            ChunkCoord center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize, _ctx.WorldGen.VoxelSize);
             int upgrades = 0;
             foreach (var kvp in _ctx.Active)
             {
@@ -235,3 +236,4 @@ namespace TerraVoxel.Voxel.Lod
         internal int GetInitialLodStep(ChunkCoord coord) => _ctx.Owner.GetInitialLodStep(coord);
     }
 }
+*/

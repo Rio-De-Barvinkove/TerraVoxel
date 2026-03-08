@@ -1,5 +1,5 @@
 using TerraVoxel.Voxel.Core;
-using TerraVoxel.Voxel.GPU;
+/* using TerraVoxel.Voxel.GPU; */
 using Unity.Burst;
 using Unity.Collections;
 using Unity.Jobs;
@@ -13,19 +13,19 @@ namespace TerraVoxel.Voxel.Generation
     /// </summary>
     public class ChunkGenerator : IChunkGenerator
     {
-        bool useGpu = true;
+        bool useGpu = false;
+
+        public bool UseGpu { get => useGpu; set => useGpu = value; }
+        /* GPU pipeline disabled (CPU-only rollback)
         GpuChunkGenerator _gpuChunkGenerator;
         GpuWorldState _gpuWorldState;
-
-        /// <summary>Enable GPU generation when GpuChunkGenerator and GpuWorldState are set.</summary>
-        public bool UseGpu { get => useGpu; set => useGpu = value; }
         public bool SupportsGpuGeneration => useGpu && _gpuChunkGenerator != null && _gpuWorldState != null;
-        /// <summary>Set for GPU path. When both are set, ScheduleGpuGeneration dispatches to GPU.</summary>
         public void SetGpuPipeline(GpuWorldState worldState, GpuChunkGenerator gpuGenerator)
         {
             _gpuWorldState = worldState;
             _gpuChunkGenerator = gpuGenerator;
         }
+        */
         [BurstCompile]
         struct ChunkGeneratorJob : IJobParallelFor
         {
@@ -38,10 +38,14 @@ namespace TerraVoxel.Voxel.Generation
             public float BaseHeight;
             public float HeightScale;
             public float HorizontalScale;
-            public int ColumnChunks;
             public int Seed;
             public ushort MaterialIndex;
             public int StartIndex;
+            public bool EnableCaves;
+            public float CaveScale;
+            public float CaveThreshold;
+            public float CaveDetailScale;
+            public float CaveDetailWeight;
 
             public void Execute(int index)
             {
@@ -55,13 +59,28 @@ namespace TerraVoxel.Voxel.Generation
                 int worldY = CoordY * size + y;
                 int worldZ = CoordZ * size + z;
 
-                float height = SampleNoise(worldX, worldZ);
-                int h = (int)math.clamp(math.floor(height), 0, ColumnChunks * size - 1);
+                float height = SampleHeightNoise(worldX, worldZ);
+                int h = (int)math.floor(height);
 
-                Materials[index] = worldY <= h ? MaterialIndex : (ushort)VoxelMaterial.Air;
+                bool solid = worldY <= h;
+
+                if (solid && EnableCaves)
+                {
+                    float3 cavePos = new float3(worldX + Seed, worldY, worldZ + Seed);
+                    float cave = (noise.snoise(cavePos * CaveScale) + 1f) * 0.5f;
+                    if (CaveDetailWeight > 0f)
+                    {
+                        float detail = (noise.snoise(cavePos * CaveDetailScale) + 1f) * 0.5f;
+                        cave = cave * (1f - CaveDetailWeight) + detail * CaveDetailWeight;
+                    }
+                    if (cave > CaveThreshold)
+                        solid = false;
+                }
+
+                Materials[index] = solid ? MaterialIndex : (ushort)VoxelMaterial.Air;
             }
 
-            float SampleNoise(int wx, int wz)
+            float SampleHeightNoise(int wx, int wz)
             {
                 float totalWeight = 0f;
                 float value = 0f;
@@ -71,19 +90,8 @@ namespace TerraVoxel.Voxel.Generation
                     var layer = Layers[i];
                     float2 uv = new float2((wx + Seed) * layer.Scale * HorizontalScale,
                                            (wz + Seed) * layer.Scale * HorizontalScale);
-                    float v = 0f;
-                    switch (layer.Type)
-                    {
-                        case NoiseType.Perlin:
-                        case NoiseType.Voronoi: // placeholder
-                            v = noise.snoise(uv); // simplex as stand-in
-                            v = (v + 1f) * 0.5f;
-                            break;
-                        case NoiseType.Simplex:
-                            v = noise.snoise(uv);
-                            v = (v + 1f) * 0.5f;
-                            break;
-                    }
+                    float v = noise.snoise(uv);
+                    v = (v + 1f) * 0.5f;
                     value += v * layer.Weight;
                     totalWeight += math.max(layer.Weight, 0.0001f);
                 }
@@ -101,27 +109,12 @@ namespace TerraVoxel.Voxel.Generation
             }
         }
 
-        /// <summary>Schedule GPU generation (coord, slot). Call when useGpu and GpuPipeline set; no ChunkData needed.</summary>
-        public void ScheduleGpuGeneration(GpuWorldState state, ChunkCoord coord, int slot, WorldGenConfig config, NoiseStack noiseStack)
-        {
-            var s = state != null ? state : _gpuWorldState;
-            if (useGpu && _gpuChunkGenerator != null && _gpuChunkGenerator.IsValid && s != null)
-            {
-                _gpuChunkGenerator.ScheduleGeneration(s, coord, slot, config, noiseStack);
-                return;
-            }
-#if UNITY_EDITOR && ALLOW_CPU_FALLBACK
-            Debug.LogWarning("[ChunkGenerator] ScheduleGpuGeneration called but GPU not configured; no work done.");
-#endif
-        }
+        /* ScheduleGpuGeneration disabled (CPU-only rollback)
+        public void ScheduleGpuGeneration(GpuWorldState state, ChunkCoord coord, int slot, WorldGenConfig config, NoiseStack noiseStack) { ... }
+        */
 
         public JobHandle Schedule(ChunkData data, ChunkCoord coord, WorldGenConfig config, NoiseStack noiseStack, out NativeArray<NoiseLayer> layers, int startIndex = 0, int count = -1)
         {
-            if (useGpu && _gpuChunkGenerator != null && _gpuWorldState != null)
-            {
-                layers = new NativeArray<NoiseLayer>(0, Allocator.Persistent);
-                return default;
-            }
             layers = (noiseStack != null && noiseStack.Layers != null)
                 ? new NativeArray<NoiseLayer>(noiseStack.Layers, Allocator.Persistent)
                 : new NativeArray<NoiseLayer>(0, Allocator.Persistent);
@@ -157,10 +150,14 @@ namespace TerraVoxel.Voxel.Generation
                 BaseHeight = config.BaseHeight,
                 HeightScale = config.HeightScale,
                 HorizontalScale = config.HorizontalScale,
-                ColumnChunks = config.ColumnChunks,
                 Seed = config.Seed,
                 MaterialIndex = (ushort)matIndex,
-                StartIndex = startIndex
+                StartIndex = startIndex,
+                EnableCaves = config.EnableCaves,
+                CaveScale = config.CaveScale,
+                CaveThreshold = config.CaveThreshold,
+                CaveDetailScale = config.CaveDetailScale,
+                CaveDetailWeight = config.CaveDetailWeight
             };
 
             return job.Schedule(materialSlice.Length, 64);

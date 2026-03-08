@@ -1,3 +1,4 @@
+/*
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.GPU
@@ -33,7 +34,7 @@ namespace TerraVoxel.Voxel.GPU
             _maxFacesPerChunk = Mathf.Max(1, maxFacesPerChunk);
             _faceBuffer?.Release();
             _faceCounter?.Release();
-            _faceBuffer = new ComputeBuffer(_maxFacesPerChunk * 2, sizeof(uint));
+            _faceBuffer = new ComputeBuffer(_maxFacesPerChunk * 2, sizeof(uint)); // 2 uints per face: packed0 (pos), packed1 (face|mat)
             _faceCounter = new ComputeBuffer(1, sizeof(uint));
         }
 
@@ -61,6 +62,7 @@ namespace TerraVoxel.Voxel.GPU
             _shader.SetInt("MaxFaces_", _maxFacesPerChunk);
 
             int groups = Mathf.CeilToInt(chunkSize / 8f);
+            if (groups <= 0) return;
             _shader.Dispatch(_kernelDetectFaces, groups, groups, groups);
 
             _shader.SetBuffer(_kernelGenerateVertices, "FaceBuffer", _faceBuffer);
@@ -98,7 +100,7 @@ namespace TerraVoxel.Voxel.GPU
         /// <summary>FaceCounter buffer for async readback. Request immediately after MeshChunk before any other MeshChunk.</summary>
         public ComputeBuffer FaceCounter => _faceCounter;
 
-        /// <summary>Readback mesh vertices from GPU and create Mesh for MeshCollider. Vertices are converted to chunk-local space (origin at center). Caller must destroy returned mesh when done.</summary>
+        /// <summary>Readback mesh vertices from GPU and create Mesh for MeshCollider. Vertices are converted to chunk-local space (origin at center). Caller must destroy returned mesh when done. Causes CPU stall; prefer GpuColliderReadbackQueue for async.</summary>
         public static Mesh CreateColliderMeshFromGpu(GpuWorldState state, int slot, int chunkSize, float voxelSize)
         {
             if (state == null) return null;
@@ -135,5 +137,21 @@ namespace TerraVoxel.Voxel.GPU
             _faceCounter?.Release();
             _faceCounter = null;
         }
+    }
+}
+*/
+
+using UnityEngine;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public sealed class GpuMesher
+    {
+        public bool IsValid => false;
+        public ComputeBuffer FaceCounter => null;
+        public void Initialize(ComputeShader shader, int maxFacesPerChunk = 200000) { }
+        public void MeshChunk(GpuWorldState state, int slot) { }
+        public static Mesh CreateColliderMeshFromGpu(GpuWorldState state, int slot, int chunkSize, float voxelSize) => null;
+        public void Dispose() { }
     }
 }

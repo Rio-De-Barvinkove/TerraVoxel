@@ -1,7 +1,7 @@
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
 using UnityEngine.Profiling;
-using TerraVoxel.Voxel.GPU;
+/* using TerraVoxel.Voxel.GPU; */
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
@@ -30,20 +30,7 @@ namespace TerraVoxel.Voxel.Streaming
             if (chunk == null) return;
             chunk.SetRendererEnabled(true);
             if (addColliders)
-            {
-                if (chunk.IsGpuRendered)
-                {
-                    bool hasMesh = chunk.Data.GpuSlot >= 0 && _gpuWorldState != null
-                        && _gpuWorldState.GetDescriptor(chunk.Data.GpuSlot).VertexCount > 0;
-                    if (hasMesh)
-                        chunk.SetGpuColliderEnabled(true);
-                }
-                else
-                    chunk.SetColliderEnabled(true);
-            }
-
-            if (chunk.IsGpuRendered)
-                return;
+                chunk.SetColliderEnabled(true);
 
             Mesh mesh = chunk.GetRenderMesh();
             if (mesh == null || mesh.vertexCount == 0)
@@ -51,7 +38,6 @@ namespace TerraVoxel.Voxel.Streaming
                 QueueRemesh(coord);
                 return;
             }
-            // If QueueRemesh did not run yet or remesh fails later, chunk stays without mesh until next pass.
 
             if (chunk.IsLowLod || (enableReverseLod && reverseLodStep > 1))
             {
@@ -63,10 +49,11 @@ namespace TerraVoxel.Voxel.Streaming
 
         internal void SpawnChunk(ChunkCoord coord, bool preload = false, int lodStepOverride = 0)
         {
+            /* CPU-only rollback: SpawnChunkGpu вимкнено — завжди CPU path
             bool useCpuPath = false;
             if (useGpuPipeline && dualPipelineCpuRadius > 0 && player != null && worldGen != null)
             {
-                var center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
+                var center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize, worldGen.VoxelSize);
                 int dx = Mathf.Abs(coord.X - center.X);
                 int dz = Mathf.Abs(coord.Z - center.Z);
                 int dist = Mathf.Max(dx, dz);
@@ -86,6 +73,7 @@ namespace TerraVoxel.Voxel.Streaming
                 _warnedGpuNotInitialized = true;
                 Debug.LogWarning("[ChunkManager] GPU pipeline enabled but GPU not initialized (WorldGen or compute shaders missing in Awake). Spawning CPU chunks. Assign WorldGen and compute shaders before Play.");
             }
+            */
 
             Profiler.BeginSample("SpawnChunk");
             if (!EnsurePrefab() || chunkPrefab == null)
@@ -93,16 +81,25 @@ namespace TerraVoxel.Voxel.Streaming
                 Profiler.EndSample();
                 return;
             }
+
+            int chunkSize = worldGen.ChunkSize;
+            float estimatedMaxHeight = worldGen.BaseHeight + worldGen.HeightScale;
+            int chunkBottomY = coord.Y * chunkSize;
+            if (chunkBottomY > (int)estimatedMaxHeight + chunkSize)
+            {
+                Profiler.EndSample();
+                return;
+            }
+
             if (_pool == null) _pool = new ChunkPool(chunkPrefab, transform);
             if (_generator == null) _generator = new ChunkGenerator();
 
             var chunk = _pool.Get();
-            float chunkWorldSize = worldGen.ChunkSize * VoxelConstants.VoxelSize;
+            float chunkWorldSize = worldGen.ChunkSize * worldGen.VoxelSize;
             chunk.Initialize(coord, chunkWorldSize);
-            if (srpBatchingConfig != null)
-                srpBatchingConfig.ApplyToChunk(chunk);
-            else if (voxelMaterial != null)
-                chunk.SetSharedMaterial(voxelMaterial);
+            var mat = GetMaterialForChunk();
+            if (mat != null)
+                chunk.SetSharedMaterial(mat);
             ApplyChunkLayer(chunk);
             if (preload)
             {
@@ -115,38 +112,30 @@ namespace TerraVoxel.Voxel.Streaming
                 _preloaded.Remove(coord);
             }
 
-            bool allocateDensity = saveManager != null && saveManager.SaveDensity;
+            bool allocateDensity = false; /* saveManager disabled */
             chunk.Data.Allocate(worldGen.ChunkSize, Unity.Collections.Allocator.Persistent, allocateDensity);
             chunk.Data.ValidateSize(worldGen.ChunkSize);
             double spawnStart = Time.realtimeSinceStartupAsDouble;
             bool loadedFromCache = TryLoadFromCache(coord, chunk.Data);
             bool loadedSnapshot = false;
-            if (!loadedFromCache)
+            if (loadedFromCache && _dataCache.TryGetValue(coord, out var cached))
             {
-                if (hybridSave != null)
-                    loadedSnapshot = hybridSave.TryLoadSnapshot(coord, chunk.Data);
-                else if (saveManager != null && saveManager.LoadOnSpawn)
-                    loadedSnapshot = saveManager.TryLoadInto(coord, chunk.Data);
-            }
-            else
-            {
-                if (_dataCache.TryGetValue(coord, out var cached))
-                {
-                    cached.Dispose();
-                    _dataCache.Remove(coord);
-                }
+                cached.Dispose();
+                _dataCache.Remove(coord);
+                DataCacheEvictionRemove(coord);
             }
 
             _active[coord] = chunk;
 
-            bool applySafeSpawn = !loadedFromCache && !loadedSnapshot && _safeSpawnInitialized && worldGen.EnableSafeSpawn && !preload;
-            bool applyDelta = !loadedFromCache && !loadedSnapshot && hybridSave != null;
+            bool applySafeSpawn = false; /* !loadedFromCache && !loadedSnapshot && _safeSpawnInitialized && worldGen.EnableSafeSpawn && !preload */
+            bool applyDelta = false; /* !loadedFromCache && !loadedSnapshot && hybridSave != null */
 
             int initialLod = lodStepOverride > 0 ? lodStepOverride : 1;
             if (loadedFromCache || loadedSnapshot)
             {
-                if (!loadedFromCache && hybridSave == null && modManager != null)
+                /* if (!loadedFromCache && hybridSave == null && modManager != null)
                     modManager.ApplyModsToChunk(coord, chunk.Data);
+                */
 
                 if (!ScheduleMeshForChunk(coord, spawnStart, initialLod))
                     QueueRemesh(coord);
@@ -158,28 +147,24 @@ namespace TerraVoxel.Voxel.Streaming
             Profiler.EndSample();
         }
 
+        /* SpawnChunkGpu and ApplySafeSpawnToGpu commented out (CPU-only rollback)
         void SpawnChunkGpu(ChunkCoord coord, bool preload)
         {
             if (!EnsurePrefab() || chunkPrefab == null) return;
             if (_pool == null) _pool = new ChunkPool(chunkPrefab, transform);
 
-            int slot;
-            try
-            {
-                slot = _gpuWorldState.AllocateChunk(coord);
-            }
-            catch (System.InvalidOperationException)
+            if (!_gpuWorldState.TryAllocateChunk(coord, out int slot))
             {
                 if (!_warnedGpuSlotsFull)
                 {
                     _warnedGpuSlotsFull = true;
-                    Debug.LogWarning("[ChunkManager] GPU slot allocator full (gpuMaxChunks reached). Increase gpuMaxChunks or reduce load radius. Chunk not spawned.");
+                    Debug.LogWarning("[ChunkManager] GPU slot allocator full or chunk already allocated (gpuMaxChunks reached). Increase gpuMaxChunks or reduce load radius. Chunk not spawned.");
                 }
                 return;
             }
 
             // GPU spawn order: gen (or load) → SyncVoxelSlot if gen → mods → SafeSpawn → MeshChunk (updates descriptor.VertexCount) → ApplyGpuMeshRef → collider only if VertexCount>0. No CPU fallback.
-            float chunkWorldSize = worldGen.ChunkSize * VoxelConstants.VoxelSize;
+            float chunkWorldSize = worldGen.ChunkSize * worldGen.VoxelSize;
             Chunk chunk = null;
             bool addedToActive = false;
             try
@@ -273,7 +258,7 @@ namespace TerraVoxel.Voxel.Streaming
                         int meshVertexOffset = _gpuWorldState.GetMeshVertexOffset(slot);
                         _gpuColliderReadbackQueue.RequestColliderAsync(
                             _gpuWorldState, _gpuMesher.FaceCounter, slot, coord, chunk,
-                            maxFacesForSlot, meshVertexOffset, worldGen.ChunkSize, VoxelConstants.VoxelSize, desc.Flags);
+                            maxFacesForSlot, meshVertexOffset, worldGen.ChunkSize, worldGen.VoxelSize, desc.Flags);
                     }
                 }
 
@@ -300,7 +285,7 @@ namespace TerraVoxel.Voxel.Streaming
             }
         }
 
-        /// <summary>Write safe-spawn platform voxels directly into the GPU VoxelMaterialBuffer for a given slot/coord. Single batch upload.</summary>
+        /// <summary>Write safe-spawn platform voxels directly into the GPU VoxelMaterialBuffer for a given slot/coord. Causes CPU stall (GetData).</summary>
         void ApplySafeSpawnToGpu(ChunkCoord coord, int slot)
         {
             if (worldGen == null || _gpuWorldState == null) return;
@@ -352,5 +337,6 @@ namespace TerraVoxel.Voxel.Streaming
 
             _gpuWorldState.VoxelMaterialBuffer.SetData(voxels, 0, voxelOffset, voxelsPerChunk);
         }
+        */
     }
 }

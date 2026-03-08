@@ -1,3 +1,4 @@
+/*
 using UnityEngine;
 using UnityEngine.Profiling;
 
@@ -63,9 +64,10 @@ namespace TerraVoxel.Voxel.GPU
 
             if (_kernelOcclusionCull >= 0 && _kernelGenerateHiZ >= 0 && depthTexture != null && hiZMipTarget != null)
             {
+                bool depthOk = depthTexture.format == RenderTextureFormat.RFloat || depthTexture.format == RenderTextureFormat.RHalf;
                 int w = depthTexture.width / 2;
                 int h = depthTexture.height / 2;
-                if (w > 0 && h > 0)
+                if (depthOk && w > 0 && h > 0)
                 {
                     _shader.SetTexture(_kernelGenerateHiZ, "DepthBuffer_", depthTexture);
                     _shader.SetTexture(_kernelGenerateHiZ, "HiZMip0_", hiZMipTarget);
@@ -106,5 +108,18 @@ namespace TerraVoxel.Voxel.GPU
             Profiler.EndSample();
             // No GetData: DrawProceduralIndirect uses DrawArgsBuffer; when 0 instances it no-ops. Avoids CPU stall.
         }
+    }
+}
+*/
+
+using UnityEngine;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public sealed class GpuCuller
+    {
+        public bool IsValid => false;
+        public void Initialize(ComputeShader shader) { }
+        public void Cull(GpuWorldState state, Camera camera, float chunkWorldSize, RenderTexture depthTexture = null, RenderTexture hiZMipTarget = null, float occlusionBias = 0.01f, float? frustumMarginOverride = null, float frustumMarginScale = 6f) { }
     }
 }

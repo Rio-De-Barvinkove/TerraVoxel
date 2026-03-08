@@ -3,13 +3,13 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
-using TerraVoxel.Voxel.GPU;
-using TerraVoxel.Voxel.Lod;
+/* using TerraVoxel.Voxel.GPU; */
+/* using TerraVoxel.Voxel.Lod; */
 using TerraVoxel.Voxel.Meshing;
-using TerraVoxel.Voxel.Occlusion;
+/* using TerraVoxel.Voxel.Occlusion; */
 using TerraVoxel.Voxel.Rendering;
-using TerraVoxel.Voxel.Save;
-using TerraVoxel.Voxel.Svo;
+/* using TerraVoxel.Voxel.Save; */
+/* using TerraVoxel.Voxel.Svo; */
 using Unity.Collections;
 using UnityEngine;
 
@@ -32,47 +32,43 @@ namespace TerraVoxel.Voxel.Streaming
             internal ChunkLoader Loader { get; set; }
             internal ChunkJobsManager Jobs { get; set; }
             internal ChunkIntegrationManager Integration { get; set; }
-            internal ChunkLodManager Lod { get; set; }
-            internal ChunkCacheManager Cache { get; set; }
-            internal ChunkAdaptiveLimitsManager Adaptive { get; set; }
-            internal ChunkWorkDropManager WorkDrop { get; set; }
+            /* internal ChunkLodManager Lod { get; set; } */
+            /* internal ChunkCacheManager Cache { get; set; } */
+            /* internal ChunkAdaptiveLimitsManager Adaptive { get; set; } */
+            /* internal ChunkWorkDropManager WorkDrop { get; set; } */
             internal ChunkSafeSpawnManager SafeSpawn { get; set; }
-            internal ChunkPhysicsManager Physics { get; set; }
+            /* internal ChunkPhysicsManager Physics { get; set; } */
 
             internal Transform Player { get => _owner.player; set => _owner.player = value; }
             internal Chunk ChunkPrefab { get => _owner.chunkPrefab; set => _owner.chunkPrefab = value; }
             internal WorldGenConfig WorldGen => _owner.worldGen;
+            internal float VoxelSize => _owner.VoxelSize;
             internal NoiseStack NoiseStack => _owner.noiseStack;
-            internal ChunkViewConePrioritizer ViewCone => _owner.viewCone;
-            internal ChunkOcclusionCuller OcclusionCuller => _owner.occlusionCuller;
-            internal SvoManager SvoManager => _owner.svoManager;
+            /* internal ChunkViewConePrioritizer ViewCone => _owner.viewCone; */
+            /* internal ChunkOcclusionCuller OcclusionCuller => _owner.occlusionCuller; */
+            /* internal SvoManager SvoManager => _owner.svoManager; */
             internal StreamingTimeBudget StreamingBudget => _owner.streamingBudget;
             internal SrpBatchingConfig SrpBatchingConfig => _owner.srpBatchingConfig;
             internal Material VoxelMaterial => _owner.voxelMaterial;
             internal VoxelMaterialLibrary VoxelMaterialLibrary => _owner.voxelMaterialLibrary;
-            internal ChunkSaveManager SaveManager => _owner.saveManager;
-            internal ChunkModManager ModManager => _owner.modManager;
-            internal ChunkHybridSaveManager HybridSave => _owner.hybridSave;
-            internal ChunkPhysicsOptimizer PhysicsOptimizer => _owner.physicsOptimizer;
+            /* internal ChunkSaveManager SaveManager => _owner.saveManager; */
+            /* internal ChunkModManager ModManager => _owner.modManager; */
+            /* internal ChunkHybridSaveManager HybridSave => _owner.hybridSave; */
+            /* internal ChunkPhysicsOptimizer PhysicsOptimizer => _owner.physicsOptimizer; */
 
             internal bool UseGpuPipeline => _owner.useGpuPipeline;
-            internal int GpuMaxChunks => _owner.gpuMaxChunks;
-            internal int GpuWorldStateMaxChunks => _owner._gpuWorldState?.MaxChunks ?? _owner.gpuMaxChunks;
-            internal GpuWorldState GpuWorldState => _owner._gpuWorldState;
-            internal GpuChunkGenerator GpuChunkGenerator => _owner._gpuChunkGenerator;
-            internal GpuMesher GpuMesher => _owner._gpuMesher;
-            internal GpuCuller GpuCuller => _owner._gpuCuller;
-            internal GpuReadbackManager GpuReadbackManager => _owner._gpuReadbackManager;
-            internal uint GetGpuChunkFlags(int slot)
-            {
-                var state = _owner._gpuWorldState;
-                if (state == null || slot < 0 || slot >= state.MaxChunks) return 0;
-                var desc = state.GetDescriptor(slot);
-                return (desc.VertexCount == 0) ? ChunkDescriptorFlags.Empty : (desc.Flags & ~ChunkDescriptorFlags.Empty);
-            }
+            /* internal int GpuMaxChunks => _owner.gpuMaxChunks; */
+            /* internal int GpuWorldStateMaxChunks => _owner._gpuWorldState?.MaxChunks ?? _owner.gpuMaxChunks; */
+            /* internal GpuWorldState GpuWorldState => _owner._gpuWorldState; */
+            /* internal GpuChunkGenerator GpuChunkGenerator => _owner._gpuChunkGenerator; */
+            /* internal GpuMesher GpuMesher => _owner._gpuMesher; */
+            /* internal GpuCuller GpuCuller => _owner._gpuCuller; */
+            /* internal GpuReadbackManager GpuReadbackManager => _owner._gpuReadbackManager; */
+            /* internal uint GetGpuChunkFlags(int slot) { ... } */
 
             internal int LoadRadius { get => _owner.loadRadius; set => _owner.loadRadius = value; }
             internal int UnloadRadius { get => _owner.unloadRadius; set => _owner.unloadRadius = value; }
+            internal int VerticalRadius { get => _owner.verticalRadius; set => _owner.verticalRadius = value; }
             internal bool AddColliders { get => _owner.addColliders; set => _owner.addColliders = value; }
             internal int MaxSpawnsPerFrame { get => _owner.maxSpawnsPerFrame; set => _owner.maxSpawnsPerFrame = value; }
             internal int MaxRemeshPerFrame { get => _owner.maxRemeshPerFrame; set => _owner.maxRemeshPerFrame = value; }
@@ -105,7 +101,7 @@ namespace TerraVoxel.Voxel.Streaming
             internal bool InitialLodFromDistance { get => _owner.initialLodFromDistance; set => _owner.initialLodFromDistance = value; }
             internal bool EnableFarRangeLod { get => _owner.enableFarRangeLod; set => _owner.enableFarRangeLod = value; }
             internal int FarRangeRadius { get => _owner.farRangeRadius; set => _owner.farRangeRadius = value; }
-            internal ChunkLodSettings LodSettings => _owner.lodSettings;
+            /* internal ChunkLodSettings LodSettings => _owner.lodSettings; */
             internal int MaxLodTransitionsPerFrame { get => _owner.maxLodTransitionsPerFrame; set => _owner.maxLodTransitionsPerFrame = value; }
             internal float LodTransitionCooldown { get => _owner.lodTransitionCooldown; set => _owner.lodTransitionCooldown = value; }
             internal int MaxSvoBuildsPerFrame { get => _owner.maxSvoBuildsPerFrame; set => _owner.maxSvoBuildsPerFrame = value; }
@@ -178,7 +174,7 @@ namespace TerraVoxel.Voxel.Streaming
             internal Queue<ChunkCoord> FaceRemeshQueue => _owner._faceRemeshQueue;
             internal HashSet<ChunkCoord> FaceRemeshSet => _owner._faceRemeshSet;
             internal Dictionary<ChunkCoord, FaceMeshTask> FaceMeshJobs => _owner._faceMeshJobs;
-            internal List<RemoveCandidate> RemoveCandidates => _owner._removeCandidates;
+            internal NativeList<RemoveCandidate> RemoveCandidates => _owner._removeCandidates;
             internal List<ChunkCoord> DropBufferPendingKeep => _owner._dropPendingKeep;
             internal List<ChunkCoord> DropBufferPreloadKeep => _owner._dropPreloadKeep;
             internal List<ChunkCoord> DropBufferRemeshKeep => _owner._dropRemeshKeep;

@@ -1,3 +1,4 @@
+/*
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using UnityEngine;
@@ -25,6 +26,7 @@ namespace TerraVoxel.Voxel.GPU
         public ComputeBuffer ChunkDescriptors { get; private set; }
         public ComputeBuffer MeshVertexBuffer { get; private set; }
         public ComputeBuffer MeshNormalBuffer { get; private set; }
+        /// <summary>Reserved for future index buffer use. Currently unused; DrawProceduralIndirect uses vertex count.</summary>
         public ComputeBuffer MeshIndexBuffer { get; private set; }
         public ComputeBuffer InstanceMatrices { get; private set; }
         public ComputeBuffer VisibilityFlags { get; private set; }
@@ -44,14 +46,11 @@ namespace TerraVoxel.Voxel.GPU
         public int MaxIndicesPerChunk => _maxIndicesPerChunk;
         public int ChunkCount => _coordToSlot.Count;
 
-        /// <summary>Unity ComputeBuffer max size per buffer (2GB). Buffers exceeding this throw ArgumentException.</summary>
-        const long MaxComputeBufferBytes = 2147483648L;
-
-        /// <summary>Max chunk slots such that no buffer exceeds MaxComputeBufferBytes. MeshVertex/MeshNormal (stride 12) are typically the limit.</summary>
+        /// <summary>Max chunk slots such that no buffer exceeds platform buffer limit. Uses SystemInfo.maxGraphicsBufferSize; falls back to 2GB if unavailable. MeshVertex/MeshNormal (stride 12) are typically the limit.</summary>
         public static int ComputeMaxChunksWithinBufferLimit(int chunkSize, int maxVerticesPerChunk = 50000, int maxIndicesPerChunk = 75000)
         {
             int voxelsPerChunk = chunkSize * chunkSize * chunkSize;
-            long maxBytes = MaxComputeBufferBytes;
+            long maxBytes = SystemInfo.maxGraphicsBufferSize > 0 ? SystemInfo.maxGraphicsBufferSize : 2147483648L;
 
             int byVoxel = (int)(maxBytes / (voxelsPerChunk * (long)sizeof(uint)));
             int byVertex = (int)(maxBytes / (maxVerticesPerChunk * 12L));
@@ -107,7 +106,7 @@ namespace TerraVoxel.Voxel.GPU
             ActiveSlotIndicesBuffer = new ComputeBuffer(_maxChunks, sizeof(uint));
         }
 
-        /// <summary>Upload active slot indices from _slotToCoord.Keys. Call before GpuChunkAnalyzer.ScheduleAnalysis so analyzer processes only active slots.</summary>
+        /// <summary>Upload active slot indices from _slotToCoord.Keys. Call before GpuChunkAnalyzer.ScheduleAnalysis so analyzer processes only active slots. Clears tail to avoid garbage in ClearCounts.</summary>
         public void UpdateActiveSlotIndicesBuffer()
         {
             if (ActiveSlotIndicesBuffer == null || _slotToCoord.Count == 0) return;
@@ -119,7 +118,9 @@ namespace TerraVoxel.Voxel.GPU
                 if (i >= _maxChunks) break;
                 _activeSlotIndicesStaging[i++] = (uint)slot;
             }
-            ActiveSlotIndicesBuffer.SetData(_activeSlotIndicesStaging, 0, 0, i);
+            for (; i < _maxChunks; i++)
+                _activeSlotIndicesStaging[i] = 0;
+            ActiveSlotIndicesBuffer.SetData(_activeSlotIndicesStaging);
         }
         uint[] _activeSlotIndicesStaging;
 
@@ -136,12 +137,15 @@ namespace TerraVoxel.Voxel.GPU
             }
         }
 
-        /// <summary>Allocate a slot for chunk at coord. Returns slot index. Throws if full or coord already allocated.</summary>
-        public int AllocateChunk(ChunkCoord coord)
+        /// <summary>Try to allocate a slot for chunk at coord. Returns true and slot index on success; false when full or coord already allocated.</summary>
+        public bool TryAllocateChunk(ChunkCoord coord, out int slot)
         {
+            slot = -1;
             if (_coordToSlot.ContainsKey(coord))
-                throw new System.InvalidOperationException($"[GpuWorldState] Chunk {coord} already allocated");
-            var (slot, generation) = _allocator.Allocate();
+                return false;
+            if (!_allocator.TryAllocate(out int s, out uint generation))
+                return false;
+            slot = s;
             _coordToSlot[coord] = slot;
             _slotToCoord[slot] = coord;
 
@@ -162,6 +166,14 @@ namespace TerraVoxel.Voxel.GPU
             ChunkDescriptors.SetData(_descriptorStaging, slot, slot, 1);
             ExpectedGenerationBuffer.SetData(new[] { generation }, 0, slot, 1);
 
+            return true;
+        }
+
+        /// <summary>Allocate a slot for chunk at coord. Returns slot index. Throws if full or coord already allocated. Prefer TryAllocateChunk in production.</summary>
+        public int AllocateChunk(ChunkCoord coord)
+        {
+            if (!TryAllocateChunk(coord, out int slot))
+                throw new System.InvalidOperationException($"[GpuWorldState] Chunk {coord} already allocated or no free slots");
             return slot;
         }
 
@@ -253,7 +265,7 @@ namespace TerraVoxel.Voxel.GPU
             VoxelMaterialBuffer.SetData(u, 0, offset, _voxelsPerChunk);
         }
 
-        /// <summary>Block until GPU has finished writing to this slot's voxel region (e.g. after ScheduleGeneration). Call before MeshChunk when voxels were generated on GPU.</summary>
+        /// <summary>Block until GPU has finished writing to this slot's voxel region (e.g. after ScheduleGeneration). Call before MeshChunk when voxels were generated on GPU. Causes CPU stall; prefer same-frame Gen+Mesh dispatch when possible.</summary>
         public void SyncVoxelSlot(int slot)
         {
             if (slot < 0 || slot >= _maxChunks || VoxelMaterialBuffer == null) return;
@@ -300,5 +312,44 @@ namespace TerraVoxel.Voxel.GPU
             _coordToSlot.Clear();
             _slotToCoord.Clear();
         }
+    }
+}
+*/
+
+using System.Collections.Generic;
+using TerraVoxel.Voxel.Core;
+using UnityEngine;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public sealed class GpuWorldState
+    {
+        public GpuWorldState(int maxChunks, int chunkSize, int maxVerticesPerChunk = 50000, int maxIndicesPerChunk = 75000) { }
+        public int MaxChunks => 0;
+        public int ChunkCount => 0;
+        public int ChunkSize => 0;
+        public int VoxelsPerChunk => 0;
+        public int MaxVerticesPerChunk => 0;
+        public ComputeBuffer VoxelMaterialBuffer => null;
+        public ComputeBuffer ChunkDescriptors => null;
+        public ComputeBuffer ActiveSlotIndicesBuffer => null;
+        public ComputeBuffer ExpectedGenerationBuffer => null;
+        public bool TryAllocateChunk(ChunkCoord coord, out int slot) { slot = -1; return false; }
+        public void FreeChunk(ChunkCoord coord) { }
+        public bool TryGetSlot(ChunkCoord coord, out int slot) { slot = -1; return false; }
+        public GpuChunkDescriptor GetDescriptor(int slot) => default;
+        public int GetVoxelOffset(int slot) => 0;
+        public int GetMeshVertexOffset(int slot) => 0;
+        public void SetVoxels(int slot, ushort[] materials) { }
+        public void SetVoxel(int slot, int localIndex, ushort material) { }
+        public void UpdateDescriptor(int slot, uint meshOffset, uint vertexCount, uint flags) { }
+        public ComputeBuffer MeshVertexBuffer => null;
+        public ComputeBuffer MeshNormalBuffer => null;
+        public ComputeBuffer InstanceMatrices => null;
+        public ComputeBuffer VisibilityFlags => null;
+        public ComputeBuffer VisibleChunkIndices => null;
+        public ComputeBuffer VisibleCountBuffer => null;
+        public ComputeBuffer DrawArgsBuffer => null;
+        public void Dispose() { }
     }
 }

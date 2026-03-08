@@ -1,3 +1,4 @@
+
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
@@ -25,7 +26,7 @@ namespace TerraVoxel.Voxel.Streaming
         Dictionary<ChunkCoord, ulong> _chunkMeshHashes => _ctx.ChunkMeshHashes;
         HashSet<ChunkCoord> _preloaded => _ctx.Preloaded;
         HashSet<ChunkCoord> _meshedOnce => _ctx.MeshedOnce;
-        ChunkViewConePrioritizer viewCone => _ctx.ViewCone;
+        /* ChunkViewConePrioritizer viewCone => _ctx.ViewCone; */
         StreamingTimeBudget streamingBudget => _ctx.StreamingBudget;
 
         bool enableMeshCache => _ctx.EnableMeshCache;
@@ -63,7 +64,7 @@ namespace TerraVoxel.Voxel.Streaming
             bool hasCenter = _ctx.Player != null && _ctx.WorldGen != null;
             if (hasCenter)
             {
-                center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize);
+                center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize, _ctx.WorldGen.VoxelSize);
                 keepRadius = _ctx.EffectiveUnloadRadius();
                 if (enablePreload)
                     keepRadius = Mathf.Max(keepRadius, _ctx.EffectivePreloadRadius());
@@ -141,27 +142,12 @@ namespace TerraVoxel.Voxel.Streaming
                         continue;
                     }
                     
-                    // Re-validate hash matches current chunk data (only when all neighbors present)
                     if (!chunk.Data.IsCreated || !chunk.Data.Materials.IsCreated)
                     {
                         _pendingCachedMeshes.Remove(coord);
                         continue;
                     }
-                    var currentNeighbors = _ctx.Jobs.GatherNeighborCopies(coord);
-                    bool hashStillValid = false;
-                    if (_ctx.HasAllNeighbors(currentNeighbors.Data))
-                    {
-                        ulong currentHash = _ctx.Cache.ComputeMeshCacheHash(chunk.Data.Materials, chunk.Data.Size, currentNeighbors, chunk.LodStep, chunk.Data.Density);
-                        hashStillValid = (currentHash == cachedMesh.Hash);
-                    }
-                    currentNeighbors.Dispose();
-
-                    if (!hashStillValid)
-                    {
-                        _pendingCachedMeshes.Remove(coord);
-                        _ctx.QueueRemesh(coord);
-                        continue;
-                    }
+                    /* Cache hash validation disabled (CPU-only rollback — _ctx.Cache commented) */
 
                     bool cachedApplyCollider = _ctx.AddColliders && !_preloaded.Contains(coord);
                     chunk.ApplySharedMesh(cachedMesh.Mesh, cachedApplyCollider);
@@ -187,8 +173,8 @@ namespace TerraVoxel.Voxel.Streaming
 
                     if (_ctx.WaitingSafeSpawnMesh && coord.Equals(_ctx.SafeSpawnAnchorCoord))
                     {
-                        _ctx.SafeSpawn.SnapPlayerToSafeSpawn();
-                        _ctx.SafeSpawn.SetPlayerFrozen(false);
+                        _ctx.SafeSpawn?.SnapPlayerToSafeSpawn();
+                        _ctx.SafeSpawn?.SetPlayerFrozen(false);
                         _ctx.WaitingSafeSpawnMesh = false;
                     }
 
@@ -285,8 +271,8 @@ namespace TerraVoxel.Voxel.Streaming
 
                 if (_ctx.WaitingSafeSpawnMesh && coord.Equals(_ctx.SafeSpawnAnchorCoord))
                 {
-                    _ctx.SafeSpawn.SnapPlayerToSafeSpawn();
-                    _ctx.SafeSpawn.SetPlayerFrozen(false);
+                    _ctx.SafeSpawn?.SnapPlayerToSafeSpawn();
+                    _ctx.SafeSpawn?.SetPlayerFrozen(false);
                     _ctx.WaitingSafeSpawnMesh = false;
                 }
 

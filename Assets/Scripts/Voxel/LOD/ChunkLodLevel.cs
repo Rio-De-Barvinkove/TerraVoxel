@@ -1,3 +1,4 @@
+/*
 using System;
 
 namespace TerraVoxel.Voxel.Lod
@@ -52,3 +53,4 @@ namespace TerraVoxel.Voxel.Lod
         None = 3
     }
 }
+*/

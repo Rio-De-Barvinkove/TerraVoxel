@@ -1,3 +1,10 @@
+---
+name: ""
+overview: ""
+todos: []
+isProject: false
+---
+
 # GPU Pipeline Fix & Refactor (розширений)
 
 ## Поточна ситуація
@@ -130,7 +137,7 @@
 
 ### 15. ChunkCulling.compute — ChunkCount_ = MaxChunks
 
-**Проблема:** FrustumCull, OcclusionCull, BuildDrawCommands ітерують по `ChunkCount_` = MaxChunks (з GpuCuller). При 3579 чанках — 3579 потоків. Дефіцит: обробляємо порожні слоти.
+**Проблема:** FrustumCull, OcclusionCull, BuildDrawCommands ітерують по `ChunkCount`_ = MaxChunks (з GpuCuller). При 3579 чанках — 3579 потоків. Дефіцит: обробляємо порожні слоти.
 
 **Рішення:** Якщо Culler має `ActiveSlotIndices` або ChunkCount, можна обмежити. Але Culler використовує ChunkDescriptors — порожній slot має vertexCount=0, flags=Empty. FrustumCull вже перевіряє `desc.vertexCount == 0` і `flags & EMPTY`. Тому порожні слоти швидко відсікаються. Менш критично.
 
@@ -163,17 +170,20 @@
 
 ## Файли для змін
 
-| Файл | Зміни |
-|------|-------|
-| GpuWorldState.cs | ActiveSlotIndicesBuffer |
-| GpuChunkAnalyzer.cs | ActiveSlotIndices, ітерація по активних |
-| ChunkAnalysis.compute | Kernel AnalyzeChunkCount з ActiveSlotIndices |
-| GpuMesher.cs | GenerateVertices читає FaceCounter з буфера |
-| VoxelMeshing.compute | GenerateVertices читає face count з буфера |
-| ChunkManager.Pending.cs | Throttle BuildPendingDistanceHeap при зміні center |
-| ChunkLodManager.cs | Троттлинг, reuse lists |
-| GpuCuller.cs | Кеш Vector4[6] |
+
+| Файл                    | Зміни                                                    |
+| ----------------------- | -------------------------------------------------------- |
+| GpuWorldState.cs        | ActiveSlotIndicesBuffer                                  |
+| GpuChunkAnalyzer.cs     | ActiveSlotIndices, ітерація по активних                  |
+| ChunkAnalysis.compute   | Kernel AnalyzeChunkCount з ActiveSlotIndices             |
+| GpuMesher.cs            | GenerateVertices читає FaceCounter з буфера              |
+| VoxelMeshing.compute    | GenerateVertices читає face count з буфера               |
+| ChunkManager.Pending.cs | Throttle BuildPendingDistanceHeap при зміні center       |
+| ChunkLodManager.cs      | Троттлинг, reuse lists                                   |
+| GpuCuller.cs            | Кеш Vector4[6]                                           |
 | ChunkManager.Pending.cs | RepopulateViewConeFromPendingSet skip при UseGpuPipeline |
-| GpuDrivenRenderer.cs | debug GetData умова |
-| ChunkManager.Cache.cs | fallback reuse list |
-| FILEMAP.md | Виправити DownsampleLOD, PrefixSum, GpuCuller |
+| GpuDrivenRenderer.cs    | debug GetData умова                                      |
+| ChunkManager.Cache.cs   | fallback reuse list                                      |
+| FILEMAP.md              | Виправити DownsampleLOD, PrefixSum, GpuCuller            |
+
+

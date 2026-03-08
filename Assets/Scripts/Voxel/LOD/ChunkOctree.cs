@@ -1,3 +1,4 @@
+/*
 using TerraVoxel.Voxel.Core;
 using UnityEngine;
 using System.Collections.Generic;
@@ -104,3 +105,4 @@ namespace TerraVoxel.Voxel.Lod
         }
     }
 }
+*/

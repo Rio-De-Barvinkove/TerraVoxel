@@ -1,3 +1,4 @@
+/*
 using System;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
@@ -86,5 +87,23 @@ namespace TerraVoxel.Voxel.GPU
             while (_pending.Count > 0 && _pending.Peek().done)
                 _pending.Dequeue();
         }
+    }
+}
+*/
+
+using System;
+using System.Collections.Generic;
+using TerraVoxel.Voxel.Core;
+using UnityEngine;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public sealed class GpuReadbackManager
+    {
+        public void RequestVisibleCount(ComputeBuffer visibleCountBuffer, Action<int> callback) { }
+        public void RequestChunkVoxels(GpuWorldState state, int slot, Action<ushort[]> callback) { }
+        public void RequestChunkFlags(GpuWorldState state, int slot, Action<uint> callback) { }
+        public void RequestAllDescriptorFlags(GpuWorldState state, Action<Dictionary<int, uint>> callback) { }
+        public void Update() { }
     }
 }

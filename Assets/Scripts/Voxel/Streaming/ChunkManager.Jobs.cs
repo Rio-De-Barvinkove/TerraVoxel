@@ -4,11 +4,11 @@ using System;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
-using TerraVoxel.Voxel.Lod;
+/* using TerraVoxel.Voxel.Lod; */
 using TerraVoxel.Voxel.Meshing;
 using TerraVoxel.Voxel.Rendering;
-using TerraVoxel.Voxel.Save;
-using TerraVoxel.Voxel.Svo;
+/* using TerraVoxel.Voxel.Save; */
+/* using TerraVoxel.Voxel.Svo; */
 using Unity.Collections;
 using Unity.Jobs;
 using UnityEngine;
@@ -71,7 +71,7 @@ namespace TerraVoxel.Voxel.Streaming
             bool hasCenter = player != null && worldGen != null;
             if (hasCenter)
             {
-                center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
+                center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize, worldGen.VoxelSize);
                 keepRadius = EffectiveUnloadRadius();
                 if (enablePreload)
                     keepRadius = Mathf.Max(keepRadius, EffectivePreloadRadius());
@@ -138,16 +138,7 @@ namespace TerraVoxel.Voxel.Streaming
                 if (task.ApplySafeSpawn)
                     appliedSafeSpawn = ApplySafeSpawnToChunk(chunk, coord);
 
-                if (hybridSave != null && task.ApplyDelta)
-                {
-                    hybridSave.ApplyDeltaIfAny(coord, chunk.Data);
-                    if (modManager != null && modManager.GetDeltaCount(coord) > 0)
-                        modManager.ApplyModsToChunk(coord, chunk.Data);
-                }
-                else if (hybridSave == null && modManager != null)
-                {
-                    modManager.ApplyModsToChunk(coord, chunk.Data);
-                }
+                /* hybridSave/modManager disabled (CPU-only rollback) */
 
                 if (appliedSafeSpawn && _pendingSafeSpawnSnap)
                 {
@@ -155,47 +146,7 @@ namespace TerraVoxel.Voxel.Streaming
                     _pendingSafeSpawnSnap = false;
                 }
 
-                if (initialLodFromDistance && lodSettings != null && player != null && worldGen != null)
-                {
-                    ChunkCoord lodCenter = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-                    int dx = Mathf.Abs(coord.X - lodCenter.X);
-                    int dz = Mathf.Abs(coord.Z - lodCenter.Z);
-                    int dist = Mathf.Max(dx, dz);
-                    var desired = lodSettings.ResolveLevel(dist, 1, ChunkLodMode.Mesh);
-
-                    if (desired.Mode == ChunkLodMode.None)
-                    {
-                        chunk.SetRendererEnabled(false);
-                        chunk.SetColliderEnabled(false);
-                        chunk.UsesSvo = false;
-                        chunk.IsLowLod = true;
-                        chunk.LodStep = Mathf.Max(1, desired.LodStep);
-                        chunk.LodStartTime = Time.realtimeSinceStartupAsDouble;
-                    }
-                    else if (desired.Mode == ChunkLodMode.Svo && svoManager != null)
-                    {
-                        GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
-                        if (svoManager.TryGetOrBuildMesh(coord, chunk.Data, Mathf.Max(1, desired.LodStep), maxMaterialIndex, fallbackMaterialIndex, out var svoMesh))
-                        {
-                            chunk.ApplySharedMesh(svoMesh, addCollider: false);
-                            if (srpBatchingConfig != null) srpBatchingConfig.ApplyToChunk(chunk);
-                            else if (voxelMaterial != null) chunk.SetSharedMaterial(voxelMaterial);
-                            chunk.UsesSvo = true;
-                            chunk.LodStep = desired.LodStep;
-                            chunk.IsLowLod = true;
-                            chunk.LodStartTime = Time.realtimeSinceStartupAsDouble;
-                        }
-                        else
-                            ScheduleMeshForChunk(coord, task.SpawnStart, Mathf.Max(1, desired.LodStep));
-                    }
-                    else
-                    {
-                        int lodStep = Mathf.Max(1, desired.LodStep);
-                        if (!ScheduleMeshForChunk(coord, task.SpawnStart, lodStep))
-                            QueueRemesh(coord);
-                    }
-                }
-                else
+                /* lodSettings/svoManager disabled (CPU-only rollback) */
                 {
                     int lodStep = task.LodStepOverride > 0 ? task.LodStepOverride : GetInitialLodStep(coord);
                     if (!ScheduleMeshForChunk(coord, task.SpawnStart, lodStep))
@@ -221,7 +172,7 @@ namespace TerraVoxel.Voxel.Streaming
             bool hasCenter = player != null && worldGen != null;
             if (hasCenter)
             {
-                center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
+                center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize, worldGen.VoxelSize);
                 keepRadius = EffectiveUnloadRadius();
                 if (enablePreload)
                     keepRadius = Mathf.Max(keepRadius, EffectivePreloadRadius());
@@ -377,7 +328,7 @@ namespace TerraVoxel.Voxel.Streaming
             var meshData = new MeshData(Allocator.Persistent);
             NativeArray<ushort> materialsCopy;
             ChunkData dataCopy;
-            float voxelScale = VoxelConstants.VoxelSize;
+            float voxelScale = worldGen != null ? worldGen.VoxelSize : VoxelConstants.VoxelSize;
 
             if (lodStep > 1)
             {
@@ -386,7 +337,7 @@ namespace TerraVoxel.Voxel.Streaming
                 materialsCopy = new NativeArray<ushort>(lodSize * lodSize * lodSize, Allocator.Persistent);
                 DownsampleMaterials(chunk.Data.Materials, srcSize, lodStep, materialsCopy);
                 dataCopy = new ChunkData { Materials = materialsCopy, Size = lodSize };
-                voxelScale = VoxelConstants.VoxelSize * lodStep;
+                voxelScale = (worldGen != null ? worldGen.VoxelSize : VoxelConstants.VoxelSize) * lodStep;
                 neighbors = GatherNeighborCopiesLod(coord, lodStep, lodSize, srcSize);
             }
             else
@@ -775,7 +726,7 @@ namespace TerraVoxel.Voxel.Streaming
 
             GetMeshMaterialSettings(chunk, out var maxMaterialIndex, out var fallbackMaterialIndex);
             int chunkSize = chunk.Data.Size;
-            float voxelScale = VoxelConstants.VoxelSize;
+            float voxelScale = worldGen != null ? worldGen.VoxelSize : VoxelConstants.VoxelSize;
 
             var materialsCopy = new NativeArray<ushort>(chunk.Data.Materials.Length, Allocator.Persistent);
             NativeArray<ushort>.Copy(chunk.Data.Materials, materialsCopy);
@@ -815,7 +766,7 @@ namespace TerraVoxel.Voxel.Streaming
         {
             if (_remeshSet.Count == 0) return;
             if (player == null || worldGen == null) return;
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
+            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize, worldGen.VoxelSize);
 
             int count = 0;
             int guard = _remeshSet.Count;

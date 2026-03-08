@@ -24,7 +24,7 @@ namespace TerraVoxel.Voxel.Streaming
 
         Transform player => _ctx.Player;
         WorldGenConfig worldGen => _ctx.WorldGen;
-        ChunkViewConePrioritizer viewCone => _ctx.ViewCone;
+        /* ChunkViewConePrioritizer viewCone => _ctx.ViewCone; */
         int loadRadius => _ctx.LoadRadius;
         int maxSpawnsPerFrame => _ctx.MaxSpawnsPerFrame;
         bool enablePreload => _ctx.EnablePreload;
@@ -34,7 +34,7 @@ namespace TerraVoxel.Voxel.Streaming
         internal void ProcessPending()
         {
             if (_ctx.Player == null || _ctx.WorldGen == null) return;
-            ChunkCoord center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize);
+            ChunkCoord center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize, _ctx.WorldGen.VoxelSize);
 
             int pendingCount = Mathf.Max(_ctx.Owner.PendingCount, _ctx.Owner.PendingSetCount);
             if (pendingCount > 0 && !_loggedProcessPendingEntered)
@@ -55,18 +55,7 @@ namespace TerraVoxel.Voxel.Streaming
                     if (!_loggedBudget) { _loggedBudget = true; Debug.Log("[ChunkManager] ProcessPending: break BudgetExceeded"); }
                     break;
                 }
-                if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuWorldStateMaxChunks)
-                {
-                    if (!_loggedGpuLimit)
-                    {
-                        _loggedGpuLimit = true;
-                        string hint = _ctx.HybridSave != null
-                            ? " With hybrid save, slots are freed after readback; increase Gpu Max Chunks or reduce load radius."
-                            : " Increase Gpu Max Chunks in ChunkManager or reduce load radius.";
-                        Debug.LogWarning($"[ChunkManager] GPU chunk limit reached: ChunkCount={_ctx.GpuWorldState.ChunkCount} >= GpuMaxChunks={_ctx.GpuMaxChunks}. No new chunks will spawn.{hint}");
-                    }
-                    break;
-                }
+                /* GPU limit check disabled (CPU-only rollback) */
                 if (!_ctx.UseGpuPipeline && _ctx.GenJobs.Count >= _ctx.CurrentMaxGenJobsInFlight)
                 {
                     if (!_loggedGenLimit) { _loggedGenLimit = true; Debug.Log($"[ChunkManager] ProcessPending: break GenJobs={_ctx.GenJobs.Count} >= max"); }
@@ -105,7 +94,7 @@ namespace TerraVoxel.Voxel.Streaming
             if (_ctx.Preload.Count == 0) return;
             if (_ctx.BudgetExceeded()) return;
 
-            ChunkCoord center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize);
+            ChunkCoord center = PlayerTracker.WorldToChunk(_ctx.Player.position, _ctx.WorldGen.ChunkSize, _ctx.WorldGen.VoxelSize);
             int effectivePreloadRadius = _ctx.EffectivePreloadRadius();
 
             int spawned = 0;
@@ -117,7 +106,7 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 iterations++;
                 if (_ctx.BudgetExceeded()) break;
-                if (_ctx.UseGpuPipeline && _ctx.GpuWorldState != null && _ctx.GpuWorldState.ChunkCount >= _ctx.GpuWorldStateMaxChunks) break;
+                /* GPU limit check disabled (CPU-only rollback) */
                 if (!_ctx.UseGpuPipeline && _ctx.GenJobs.Count >= _ctx.CurrentMaxGenJobsInFlight) break;
                 var coord = _ctx.Preload.Dequeue();
                 _ctx.PreloadSet.Remove(coord);
@@ -127,15 +116,7 @@ namespace TerraVoxel.Voxel.Streaming
                 {
                     if (!_ctx.Active.ContainsKey(coord) && !_ctx.PendingSet.Contains(coord))
                     {
-                        if (viewCone != null && viewCone.Enabled)
-                        {
-                            if (_ctx.PendingSet.Add(coord))
-                                viewCone.EnqueueWithPriority(coord, center, player);
-                        }
-                        else
-                        {
-                            _ctx.PendingSet.Add(coord);
-                        }
+                        _ctx.PendingSet.Add(coord);
                     }
                     continue;
                 }

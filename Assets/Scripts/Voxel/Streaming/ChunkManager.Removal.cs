@@ -11,7 +11,7 @@ namespace TerraVoxel.Voxel.Streaming
         internal void ProcessRemovalQueue()
         {
             if (player == null || worldGen == null) return;
-            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
+            ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize, worldGen.VoxelSize);
             int keepRadius = EffectiveUnloadRadius();
             if (enablePreload)
                 keepRadius = Mathf.Max(keepRadius, EffectivePreloadRadius());
@@ -68,15 +68,18 @@ namespace TerraVoxel.Voxel.Streaming
         {
             if (!_active.TryGetValue(coord, out var chunk) || chunk == null) return;
 
+            /* CPU-only rollback: GPU path вимкнено
             int gpuSlot = -1;
             if (useGpuPipeline && _gpuWorldState != null)
                 _gpuWorldState.TryGetSlot(coord, out gpuSlot);
+            */
 
             _active.Remove(coord);
             _meshedOnce.Remove(coord);
             _preloaded.Remove(coord);
             _preloadSet.Remove(coord);
 
+            /* CPU-only rollback: save/cache вимкнено
             if (gpuSlot >= 0 && hybridSave != null)
             {
                 hybridSave.HandleChunkUnloadedGpu(coord, gpuSlot);
@@ -101,6 +104,10 @@ namespace TerraVoxel.Voxel.Streaming
             {
                 CacheChunkData(coord, chunk.Data);
             }
+            */
+
+            if (enableDataCache && chunk.Data.IsCreated)
+                CacheChunkData(coord, chunk.Data);
 
             if (chunk.Data.IsCreated)
             {
@@ -111,8 +118,8 @@ namespace TerraVoxel.Voxel.Streaming
             ReleaseFaceCacheForChunk(coord);
             _neighborDirtyFaces.Remove(coord);
             _faceRemeshSet.Remove(coord);
-            if (svoManager != null)
-                svoManager.ReleaseForChunk(coord);
+            /* if (svoManager != null)
+                svoManager.ReleaseForChunk(coord); */
             if (_pendingCachedMeshes.ContainsKey(coord))
                 _pendingCachedMeshes.Remove(coord);
 
@@ -123,8 +130,9 @@ namespace TerraVoxel.Voxel.Streaming
                 _pendingMeshJobs.Remove(coord);
             }
 
-            if (gpuSlot >= 0 && chunk.IsGpuRendered)
+            /* if (gpuSlot >= 0 && chunk.IsGpuRendered)
                 chunk.ClearGpuMeshRef();
+            */
             _pool.Return(chunk);
             RebuildNeighbors(coord);
         }

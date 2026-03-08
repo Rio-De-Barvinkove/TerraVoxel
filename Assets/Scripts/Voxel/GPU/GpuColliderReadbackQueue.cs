@@ -1,3 +1,5 @@
+/*
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using UnityEngine;
@@ -13,7 +15,7 @@ namespace TerraVoxel.Voxel.GPU
     /// </summary>
     public sealed class GpuColliderReadbackQueue
     {
-        readonly Queue<PendingVertexReadback> _vertexQueue = new Queue<PendingVertexReadback>();
+        readonly ConcurrentQueue<PendingVertexReadback> _vertexQueue = new ConcurrentQueue<PendingVertexReadback>();
         readonly int _maxVertexReadbacksPerFrame;
         readonly int _maxVerticesPerChunk;
         readonly UnityEngine.Pool.ObjectPool<Vector3[]> _vertPool;
@@ -101,18 +103,15 @@ namespace TerraVoxel.Voxel.GPU
                     return;
                 }
 
-                lock (_vertexQueue)
+                _vertexQueue.Enqueue(new PendingVertexReadback
                 {
-                    _vertexQueue.Enqueue(new PendingVertexReadback
-                    {
-                        Coord = coord,
-                        Slot = slot,
-                        VertexCount = (int)vertexCount,
-                        MeshVertexOffset = meshVertexOffset,
-                        ChunkSize = chunkSize,
-                        VoxelSize = voxelSize
-                    });
-                }
+                    Coord = coord,
+                    Slot = slot,
+                    VertexCount = (int)vertexCount,
+                    MeshVertexOffset = meshVertexOffset,
+                    ChunkSize = chunkSize,
+                    VoxelSize = voxelSize
+                });
             });
         }
 
@@ -124,12 +123,8 @@ namespace TerraVoxel.Voxel.GPU
             int processed = 0;
             while (processed < _maxVertexReadbacksPerFrame)
             {
-                PendingVertexReadback pending;
-                lock (_vertexQueue)
-                {
-                    if (_vertexQueue.Count == 0) break;
-                    pending = _vertexQueue.Dequeue();
-                }
+                if (!_vertexQueue.TryDequeue(out PendingVertexReadback pending))
+                    break;
 
                 var chunk = _getChunk(pending.Coord);
                 if (chunk == null || chunk.Data.GpuSlot != pending.Slot)
@@ -146,9 +141,10 @@ namespace TerraVoxel.Voxel.GPU
                 AsyncGPUReadback.Request(meshBuffer, vertexCount * 12, meshVertexOffset * 12, (req) =>
                 {
                     if (req.hasError) return;
-                    if (_getChunk == null) return;
+                    if (_getChunk == null || _worldState == null) return;
                     var chunkCheck = _getChunk(coord);
-                    if (chunkCheck == null || chunkCheck.Data.GpuSlot != slot) return;
+                    if (chunkCheck == null || chunkCheck.Data.GpuSlot != slot)
+                        return;
 
                     var nativeVerts = req.GetData<Vector3>();
                     if (nativeVerts.Length == 0) return;
@@ -181,9 +177,23 @@ namespace TerraVoxel.Voxel.GPU
             }
         }
 
-        public int PendingCount
-        {
-            get { lock (_vertexQueue) return _vertexQueue.Count; }
-        }
+        public int PendingCount => _vertexQueue.Count;
+    }
+}
+*/
+
+using TerraVoxel.Voxel.Core;
+using UnityEngine;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public sealed class GpuColliderReadbackQueue
+    {
+        public GpuColliderReadbackQueue(int maxVertexReadbacksPerFrame = 2, int maxVerticesPerChunk = 50000) { }
+        public void SetWorldState(GpuWorldState state) { }
+        public void SetChunkResolver(System.Func<ChunkCoord, Chunk> getChunk) { }
+        public void RequestColliderAsync(GpuWorldState state, ComputeBuffer faceCounter, int slot, ChunkCoord coord, Chunk chunk, uint maxFacesForSlot, int meshVertexOffset, int chunkSize, float voxelSize, uint descFlags) { }
+        public void ProcessQueue() { }
+        public int PendingCount => 0;
     }
 }

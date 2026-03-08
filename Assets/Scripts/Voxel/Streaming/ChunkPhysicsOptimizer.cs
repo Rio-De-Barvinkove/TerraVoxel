@@ -1,3 +1,8 @@
+using TerraVoxel.Voxel.Core;
+using UnityEngine;
+
+/*
+
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
 using UnityEngine;
@@ -40,6 +45,7 @@ namespace TerraVoxel.Voxel.Streaming
 
         public void Tick(ChunkManager manager)
         {
+            // CPU-only rollback: no-op - method body commented
             if (manager == null) return;
 
             if (!enableOptimization)
@@ -82,7 +88,7 @@ namespace TerraVoxel.Voxel.Streaming
                 return;
             }
 
-            var center = PlayerTracker.WorldToChunk(player.position, chunkSize);
+            var center = PlayerTracker.WorldToChunk(player.position, chunkSize, manager.VoxelSize);
             bool centerChanged = !_hasLastCenter || !center.Equals(_lastCenter);
 
             if (!centerChanged && !configChanged && !addCollidersChanged)
@@ -242,5 +248,15 @@ namespace TerraVoxel.Voxel.Streaming
                 _physicsActive.Remove(_prune[i]);
             _prune.Clear();
         }
+    }
+}
+*/
+
+namespace TerraVoxel.Voxel.Streaming
+{
+    [DisallowMultipleComponent]
+    public class ChunkPhysicsOptimizer : MonoBehaviour
+    {
+        public void Tick(ChunkManager manager) { }
     }
 }

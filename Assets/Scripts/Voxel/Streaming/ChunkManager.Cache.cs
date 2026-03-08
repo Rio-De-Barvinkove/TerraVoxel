@@ -6,30 +6,15 @@ using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
 {
-    /// <summary>Partial: data cache, mesh cache hash/register/release/evict, TryLoadFromCache, ReleaseFaceCacheForChunk.</summary>
     public partial class ChunkManager
     {
-        /// <summary>Cache chunk data. When _cache is set, delegates to ChunkCacheManager. Fallback uses data cache eviction list (FIFO, O(1)). _cacheOpsThisFrame is reset each frame in Update.</summary>
         void CacheChunkData(ChunkCoord coord, ChunkData data)
         {
-            if (_cache != null)
-            {
-                _cache.CacheChunkData(coord, data);
-                return;
-            }
             if (!enableDataCache) return;
             if (maxCachedChunks <= 0) return;
             if (maxCacheOpsPerFrame > 0 && _cacheOpsThisFrame >= maxCacheOpsPerFrame) return;
 
             int cacheCap = maxCachedChunks;
-            if (memoryPressureThresholdMb > 0)
-            {
-#if UNITY_EDITOR
-                long memMb = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / (1024 * 1024);
-                if (memMb > memoryPressureThresholdMb)
-                    cacheCap = Mathf.Max(1, maxCachedChunks / 2);
-#endif
-            }
 
             while (_dataCache.Count >= cacheCap && DataCacheEvictionTryDequeue(out var evictCoord))
             {
@@ -56,8 +41,6 @@ namespace TerraVoxel.Voxel.Streaming
 
         ulong ComputeMeshCacheHash(NativeArray<ushort> materials, int size, NeighborDataBuffers neighbors, int lodStep = 1, NativeArray<float> density = default)
         {
-            if (_cache != null)
-                return _cache.ComputeMeshCacheHash(materials, size, neighbors, lodStep, density);
             if (!materials.IsCreated || materials.Length == 0) return 0ul;
             ulong hash = 1469598103934665603ul;
             HashArray(materials, ref hash);
@@ -149,8 +132,6 @@ namespace TerraVoxel.Voxel.Streaming
 
         bool TryQueueCachedMesh(ChunkCoord coord, ulong hash, Mesh mesh)
         {
-            if (_cache != null)
-                return _cache.TryQueueCachedMesh(coord, hash, mesh);
             if (mesh == null || mesh.vertexCount == 0)
                 return false;
             if (!_active.TryGetValue(coord, out var chunk) || !chunk.Data.IsCreated)
@@ -170,11 +151,6 @@ namespace TerraVoxel.Voxel.Streaming
 
         void RegisterMeshCacheForChunk(ChunkCoord coord, ulong hash, Mesh mesh, bool markShared, bool addCollider)
         {
-            if (_cache != null)
-            {
-                _cache.RegisterMeshCacheForChunk(coord, hash, mesh, markShared, addCollider);
-                return;
-            }
             if (mesh == null) return;
 
             if (_chunkMeshHashes.TryGetValue(coord, out var oldHash))
@@ -221,11 +197,6 @@ namespace TerraVoxel.Voxel.Streaming
 
         void ReleaseMeshCacheForChunk(ChunkCoord coord)
         {
-            if (_cache != null)
-            {
-                _cache.ReleaseMeshCacheForChunk(coord);
-                return;
-            }
             if (!_chunkMeshHashes.TryGetValue(coord, out var hash)) return;
             _chunkMeshHashes.Remove(coord);
 
@@ -240,21 +211,8 @@ namespace TerraVoxel.Voxel.Streaming
 
         void EvictMeshCacheIfNeeded()
         {
-            if (_cache != null)
-            {
-                _cache.EvictMeshCacheIfNeeded();
-                return;
-            }
             if (maxMeshCacheEntries <= 0 || _meshCache.Count <= maxMeshCacheEntries) return;
             int evictBudget = meshCacheEvictPerFrame > 0 ? meshCacheEvictPerFrame : int.MaxValue;
-            if (memoryPressureThresholdMb > 0)
-            {
-#if UNITY_EDITOR
-                long memMb = UnityEngine.Profiling.Profiler.GetTotalAllocatedMemoryLong() / (1024 * 1024);
-                if (memMb > memoryPressureThresholdMb)
-                    evictBudget *= 2;
-#endif
-            }
 
             var evictCandidates = new System.Collections.Generic.List<(ulong hash, int vertexCount, int frame)>(_meshCache.Count);
             foreach (var kvp in _meshCache)
@@ -290,18 +248,9 @@ namespace TerraVoxel.Voxel.Streaming
 
         bool TryLoadFromCache(ChunkCoord coord, ChunkData data)
         {
-            if (_cache != null)
-                return _cache.TryLoadFromCache(coord, data);
             if (!enableDataCache) return false;
             if (!_dataCache.TryGetValue(coord, out var cached)) return false;
             if (!cached.IsValid) return false;
-            if (modManager != null && modManager.GetDeltaCount(coord) > 0)
-            {
-                cached.Dispose();
-                _dataCache.Remove(coord);
-                DataCacheEvictionRemove(coord);
-                return false;
-            }
 
             cached.CopyTo(data);
             return true;
@@ -309,11 +258,6 @@ namespace TerraVoxel.Voxel.Streaming
 
         void ReleaseFaceCacheForChunk(ChunkCoord coord)
         {
-            if (_cache != null)
-            {
-                _cache.ReleaseFaceCacheForChunk(coord);
-                return;
-            }
             if (!_chunkFaceCache.TryGetValue(coord, out var arr)) return;
             _chunkFaceCache.Remove(coord);
             if (arr != null)

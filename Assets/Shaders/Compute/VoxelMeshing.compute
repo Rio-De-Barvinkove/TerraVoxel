@@ -197,6 +197,8 @@ uint PadMaxFacesForSlot_;
 void PadSlot(uint id : SV_DispatchThreadID)
 {
     uint faceCount = FaceCounter[0];
+    if (faceCount == 0)
+        return;
     if (faceCount > PadMaxFacesForSlot_)
         faceCount = PadMaxFacesForSlot_;
     uint vertexCount = faceCount * 6;

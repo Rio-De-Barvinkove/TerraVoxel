@@ -1,3 +1,4 @@
+/*
 using Unity.Collections;
 using Unity.Mathematics;
 
@@ -41,3 +42,4 @@ namespace TerraVoxel.Voxel.Svo
         }
     }
 }
+*/

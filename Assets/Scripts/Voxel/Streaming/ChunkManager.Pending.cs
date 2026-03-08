@@ -1,5 +1,5 @@
 using TerraVoxel.Voxel.Core;
-using TerraVoxel.Voxel.Lod;
+/* using TerraVoxel.Voxel.Lod; */
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.Streaming
@@ -37,29 +37,25 @@ namespace TerraVoxel.Voxel.Streaming
             _pending.Clear();
             _pendingSet.Clear();
             _pendingLodStep.Clear();
-            if (viewCone != null && viewCone.Enabled)
-                viewCone.Clear();
             _pendingDistanceHeap.Clear();
             _pendingDequeueCenter = default;
             _lastPendingCenter = center;
             _hasPendingCenter = true;
 
             if (worldGen == null) return;
-            int columnChunks = worldGen.ColumnChunks;
-            if (columnChunks <= 0) return;
+            int vr = verticalRadius;
 
             for (int dz = -loadRadius; dz <= loadRadius; dz++)
             {
                 for (int dx = -loadRadius; dx <= loadRadius; dx++)
                 {
-                    for (int dy = 0; dy < columnChunks; dy++)
+                    for (int dy = -vr; dy <= vr; dy++)
                     {
                         if (pendingQueueCap > 0 && _pendingSet.Count >= pendingQueueCap)
                             return;
-                        var coord = new ChunkCoord(center.X + dx, dy, center.Z + dz);
+                        var coord = new ChunkCoord(center.X + dx, center.Y + dy, center.Z + dz);
                         if (_active.ContainsKey(coord)) continue;
-                        if (_pendingSet.Add(coord) && viewCone != null && viewCone.Enabled)
-                            viewCone.EnqueueWithPriority(coord, center, player);
+                        _pendingSet.Add(coord);
                     }
                 }
             }
@@ -75,24 +71,14 @@ namespace TerraVoxel.Voxel.Streaming
         /// <summary>When viewCone is enabled but heap is empty and _pendingSet has entries, repopulates viewCone from _pendingSet so dequeue can progress. Call once per frame from MaintainRadius.</summary>
         internal void RepopulateViewConeFromPendingSet(ChunkCoord center)
         {
-            if (viewCone == null || !viewCone.Enabled || viewCone.Count > 0 || _pendingSet.Count == 0 || player == null) return;
-            foreach (var c in _pendingSet)
-                viewCone.EnqueueWithPriority(c, center, player);
+            /* viewCone disabled (CPU-only rollback) */
         }
 
         /// <summary>Removes one pending coord (farthest when no viewCone). O(n) over pending set when using TryFindFarthestPending.</summary>
         internal void DropOnePendingOldest(ChunkCoord center)
         {
             if (PendingCount == 0) return;
-            ChunkCoord dropped;
-            if (viewCone != null && viewCone.Enabled)
-            {
-                if (!viewCone.TryRemoveLowestPriority(out dropped)) return;
-            }
-            else
-            {
-                if (!TryFindFarthestPending(center, out dropped)) return;
-            }
+            if (!TryFindFarthestPending(center, out var dropped)) return;
             _pendingSet.Remove(dropped);
         }
 
@@ -101,17 +87,6 @@ namespace TerraVoxel.Voxel.Streaming
         {
             coord = default;
             if (PendingCount == 0 && _pendingSet.Count == 0) return false;
-            if (viewCone != null && viewCone.Enabled)
-            {
-                if (viewCone.TryDequeue(out coord))
-                {
-                    _pendingSet.Remove(coord);
-                    return true;
-                }
-                if (_pendingSet.Count > 0)
-                    return TryFindClosestPending(center, out coord);
-                return false;
-            }
             return TryFindClosestPending(center, out coord);
         }
 
@@ -210,46 +185,36 @@ namespace TerraVoxel.Voxel.Streaming
             return true;
         }
 
-        /// <summary>True if coord is within keepRadius of center (XZ only; Y checked against ColumnChunks bounds).</summary>
+        /// <summary>True if coord is within keepRadius (XZ) and verticalRadius (Y) of center.</summary>
         internal bool IsWithinKeepRadius(ChunkCoord coord, ChunkCoord center, int keepRadius)
         {
             if (keepRadius < 0) return false;
-            if (worldGen == null) return false;
-            if (coord.Y < 0 || coord.Y >= worldGen.ColumnChunks) return false;
             int dx = Mathf.Abs(coord.X - center.X);
             int dz = Mathf.Abs(coord.Z - center.Z);
-            return dx <= keepRadius && dz <= keepRadius;
+            int dy = Mathf.Abs(coord.Y - center.Y);
+            return dx <= keepRadius && dz <= keepRadius && dy <= verticalRadius;
         }
 
-        /// <summary>True if coord is within radius of center (XZ only; Y checked against ColumnChunks bounds).</summary>
+        /// <summary>True if coord is within radius (XZ) and verticalRadius (Y) of center.</summary>
         internal bool IsWithinLoadRadius(ChunkCoord coord, ChunkCoord center, int radius)
         {
             if (radius < 0) return false;
-            if (worldGen == null) return false;
-            if (coord.Y < 0 || coord.Y >= worldGen.ColumnChunks) return false;
             int dx = Mathf.Abs(coord.X - center.X);
             int dz = Mathf.Abs(coord.Z - center.Z);
-            return dx <= radius && dz <= radius;
+            int dy = Mathf.Abs(coord.Y - center.Y);
+            return dx <= radius && dz <= radius && dy <= verticalRadius;
         }
 
         /// <summary>Initial LOD step for chunk not yet meshed. Uses current step 1 in ResolveLevel because chunk has no mesh yet. XZ distance only.</summary>
         internal int GetInitialLodStep(ChunkCoord coord)
         {
-            if (enableFullLod && lodSettings != null && player != null && worldGen != null)
-            {
-                ChunkCoord center = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
-                int dx = Mathf.Abs(coord.X - center.X);
-                int dz = Mathf.Abs(coord.Z - center.Z);
-                int dist = Mathf.Max(dx, dz);
-                var desired = lodSettings.ResolveLevel(dist, 1, ChunkLodMode.Mesh);
-                return Mathf.Max(1, desired.LodStep);
-            }
+            /* lodSettings disabled (CPU-only rollback) */
 
             if (!enableReverseLod) return 1;
             if (reverseLodStep <= 1) return 1;
             if (player == null || worldGen == null) return 1;
 
-            ChunkCoord playerChunk = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize);
+            ChunkCoord playerChunk = PlayerTracker.WorldToChunk(player.position, worldGen.ChunkSize, worldGen.VoxelSize);
             int dxx = Mathf.Abs(coord.X - playerChunk.X);
             int dzz = Mathf.Abs(coord.Z - playerChunk.Z);
             int dist2 = Mathf.Max(dxx, dzz);

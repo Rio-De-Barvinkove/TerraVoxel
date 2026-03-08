@@ -1,3 +1,4 @@
+/*
 using UnityEngine;
 using UnityEngine.Rendering.Universal;
 
@@ -14,20 +15,75 @@ namespace TerraVoxel.Voxel.GPU
         [SerializeField] GpuDrivenRenderer gpuDrivenRenderer;
 
         GpuDrivenRenderPass _pass;
+        GpuDrivenRenderer _cachedRenderer;
 
         public override void Create()
         {
             _pass = null;
+            _cachedRenderer = null;
         }
 
         public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
         {
-            if (gpuDrivenRenderer == null)
-                gpuDrivenRenderer = Object.FindAnyObjectByType<GpuDrivenRenderer>();
-            if (gpuDrivenRenderer == null)
+            if (gpuDrivenRenderer != null)
+                _cachedRenderer = gpuDrivenRenderer;
+            if (_cachedRenderer == null)
+            {
+#if UNITY_2023_1_OR_NEWER
+                _cachedRenderer = Object.FindAnyObjectByType<GpuDrivenRenderer>();
+#else
+                _cachedRenderer = Object.FindObjectOfType<GpuDrivenRenderer>();
+#endif
+            }
+            if (_cachedRenderer == null)
                 return;
-            if (_pass == null)
-                _pass = new GpuDrivenRenderPass(gpuDrivenRenderer);
+            if (_pass == null || _pass.Renderer != _cachedRenderer)
+                _pass = new GpuDrivenRenderPass(_cachedRenderer);
+            renderer.EnqueuePass(_pass);
+        }
+    }
+}
+*/
+
+using TerraVoxel.Voxel.Streaming;
+using UnityEngine;
+using UnityEngine.Rendering.Universal;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public class GpuDrivenRenderFeature : ScriptableRendererFeature
+    {
+        [SerializeField] GpuDrivenRenderer gpuDrivenRenderer;
+        GpuDrivenRenderPass _pass;
+        GpuDrivenRenderer _cachedRenderer;
+
+        public override void Create()
+        {
+            _pass = null;
+            _cachedRenderer = null;
+        }
+
+        public override void AddRenderPasses(ScriptableRenderer renderer, ref RenderingData renderingData)
+        {
+#if UNITY_2023_1_OR_NEWER
+            var chunkManager = Object.FindAnyObjectByType<ChunkManager>();
+#else
+            var chunkManager = Object.FindObjectOfType<ChunkManager>();
+#endif
+            if (chunkManager != null && !chunkManager.UseGpuPipeline)
+                return;
+            if (gpuDrivenRenderer != null) _cachedRenderer = gpuDrivenRenderer;
+            if (_cachedRenderer == null)
+            {
+#if UNITY_2023_1_OR_NEWER
+                _cachedRenderer = Object.FindAnyObjectByType<GpuDrivenRenderer>();
+#else
+                _cachedRenderer = Object.FindObjectOfType<GpuDrivenRenderer>();
+#endif
+            }
+            if (_cachedRenderer == null) return;
+            if (_pass == null || _pass.Renderer != _cachedRenderer)
+                _pass = new GpuDrivenRenderPass(_cachedRenderer);
             renderer.EnqueuePass(_pass);
         }
     }

@@ -1,3 +1,4 @@
+/*
 using UnityEngine;
 
 namespace TerraVoxel.Voxel.GPU
@@ -24,5 +25,18 @@ namespace TerraVoxel.Voxel.GPU
             if (!IsValid || state == null) return;
             // Placeholder: dispatch CommitChanges per dirty chunk when erosion is implemented.
         }
+    }
+}
+*/
+
+using UnityEngine;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public sealed class GpuErosionSimulator
+    {
+        public bool IsValid => false;
+        public void Initialize(ComputeShader shader) { }
+        public void Tick(GpuWorldState state) { }
     }
 }

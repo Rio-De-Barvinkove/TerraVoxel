@@ -1,3 +1,4 @@
+/*
 using System;
 using System.Collections.Generic;
 using TerraVoxel.Voxel.Core;
@@ -195,3 +196,4 @@ namespace TerraVoxel.Voxel.Svo
         }
     }
 }
+*/

@@ -1,3 +1,4 @@
+/*
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Rendering;
 using UnityEngine;
@@ -32,6 +33,7 @@ namespace TerraVoxel.Voxel.GPU
         MaterialPropertyBlock _properties;
         Bounds _bounds;
         float _debugLogNext;
+        float _debugLogDrawArgsNext;
         bool _materialConfigured;
         static bool _warnedNoTexture;
         static bool _warnedDrawViaFeature;
@@ -56,6 +58,9 @@ namespace TerraVoxel.Voxel.GPU
             _materialInstance.SetInt("_LayerIndex", voxelMaterialLibrary.DefaultLayerIndex);
             _materialConfigured = true;
         }
+
+        /// <summary>True when there are chunks to draw. Use to skip render pass when empty.</summary>
+        public bool HasDrawData => _worldState != null && _worldState.ChunkCount > 0;
 
         public void SetWorldState(GpuWorldState state)
         {
@@ -85,6 +90,7 @@ namespace TerraVoxel.Voxel.GPU
             if (_materialInstance == null)
             {
                 _materialInstance = new Material(instancedMaterial);
+                _materialInstance.CopyPropertiesFromMaterial(instancedMaterial);
                 _materialConfigured = false;
             }
             if (!_materialConfigured && voxelMaterialLibrary != null)
@@ -158,9 +164,9 @@ namespace TerraVoxel.Voxel.GPU
             _properties.SetBuffer("_MeshVertexBuffer", _worldState.MeshVertexBuffer);
             _properties.SetBuffer("_MeshNormalBuffer", _worldState.MeshNormalBuffer);
 #if UNITY_EDITOR
-            if (debugLogDrawArgs && Time.time >= _debugLogNext)
+            if (debugLogDrawArgs && Time.time >= _debugLogDrawArgsNext)
             {
-                _debugLogNext = Time.time + 1f;
+                _debugLogDrawArgsNext = Time.time + 1f;
                 uint[] args = new uint[5];
                 _worldState.DrawArgsBuffer.GetData(args);
                 Debug.Log($"[GpuDrivenRenderer] DrawArgs: {args[0]}, {args[1]}, {args[2]}, {args[3]} (vertexCount/instance, instanceCount, startVertex, startInstance)");
@@ -207,5 +213,26 @@ namespace TerraVoxel.Voxel.GPU
                 _materialInstance = null;
             }
         }
+    }
+}
+*/
+
+using TerraVoxel.Voxel.Core;
+using TerraVoxel.Voxel.Rendering;
+using UnityEngine;
+using UnityEngine.Rendering;
+using UnityEngine.Rendering.RenderGraphModule;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public sealed class GpuDrivenRenderer : MonoBehaviour
+    {
+        public bool HasDrawData => false;
+        public void SetWorldState(GpuWorldState state) { }
+        public void ConfigureFromVoxelMaterial(VoxelMaterialLibrary library) { }
+        public void SetBoundsFromCamera(Camera camera) { }
+        public void Render(Camera camera) { }
+        public bool RecordDrawToCommandBuffer(CommandBuffer cmd) => false;
+        public bool RecordDrawToCommandBuffer(RasterCommandBuffer cmd) => false;
     }
 }

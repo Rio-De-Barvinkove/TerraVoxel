@@ -65,7 +65,7 @@ namespace TerraVoxel.Voxel.Streaming
             if (worldGen == null || !worldGen.EnableSafeSpawn || player == null) return;
 
             int chunkSize = worldGen.ChunkSize;
-            float voxelSize = VoxelConstants.VoxelSize;
+            float voxelSize = _ctx.VoxelSize;
             float sizeChunks = Mathf.Max(0.1f, worldGen.SafeSpawnSizeChunks);
             _ctx.SafeSpawnSizeVoxels = Mathf.Max(1, Mathf.RoundToInt(sizeChunks * chunkSize));
 
@@ -227,7 +227,7 @@ namespace TerraVoxel.Voxel.Streaming
         {
             var player = _ctx.Player;
             if (player == null) return;
-            float voxelSize = VoxelConstants.VoxelSize;
+            float voxelSize = _ctx.VoxelSize;
             float cx = (_ctx.SafeSpawnWorldX0 + _ctx.SafeSpawnSizeVoxels * 0.5f) * voxelSize;
             float cz = (_ctx.SafeSpawnWorldZ0 + _ctx.SafeSpawnSizeVoxels * 0.5f) * voxelSize;
             float surfaceY = (_ctx.SafeSpawnTopY + 1) * voxelSize;

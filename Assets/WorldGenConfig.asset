@@ -12,15 +12,21 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 246561ee14a478e43976d7e920b06023, type: 3}
   m_Name: WorldGenConfig
   m_EditorClassIdentifier: TerraVoxel.Voxel::TerraVoxel.Voxel.Generation.WorldGenConfig
-  Seed: 9
-  GeneratorVersion: 2
-  ChunkSize: 32
+  Seed: 10
+  GeneratorVersion: 4
+  ChunkSize: 64
   ColumnChunks: 4
+  VoxelSize: 0.3
   BaseHeight: 64
   HeightScale: 32
   HorizontalScale: 0.01
   EnableRivers: 0
   DefaultMaterialIndex: 32
+  EnableCaves: 1
+  CaveScale: 0.04
+  CaveThreshold: 0.968
+  CaveDetailScale: 0.08
+  CaveDetailWeight: 0.973
   EnableSafeSpawn: 1
   SafeSpawnSizeChunks: 1
   SafeSpawnThickness: 5

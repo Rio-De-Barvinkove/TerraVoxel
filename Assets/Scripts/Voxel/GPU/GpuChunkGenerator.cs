@@ -1,3 +1,4 @@
+/*
 using TerraVoxel.Voxel.Core;
 using TerraVoxel.Voxel.Generation;
 using UnityEngine;
@@ -37,7 +38,7 @@ namespace TerraVoxel.Voxel.GPU
             int seed = config != null ? config.Seed : 1;
             ushort materialIndex = config != null && config.DefaultMaterialIndex > 0
                 ? (ushort)Mathf.Clamp(config.DefaultMaterialIndex, 1, ushort.MaxValue)
-                : (ushort)2;
+                : (ushort)1;
 
             _shader.SetBuffer(_kernelGenerate, "VoxelMaterialBuffer", state.VoxelMaterialBuffer);
             _shader.SetInts("ChunkCoord_", coord.X, coord.Y, coord.Z);
@@ -51,7 +52,23 @@ namespace TerraVoxel.Voxel.GPU
             _shader.SetInt("MaterialIndex_", materialIndex);
 
             int groups = Mathf.CeilToInt(chunkSize / 8f);
+            if (groups <= 0) return;
             _shader.Dispatch(_kernelGenerate, groups, groups, groups);
         }
+    }
+}
+*/
+
+using TerraVoxel.Voxel.Core;
+using TerraVoxel.Voxel.Generation;
+using UnityEngine;
+
+namespace TerraVoxel.Voxel.GPU
+{
+    public sealed class GpuChunkGenerator
+    {
+        public bool IsValid => false;
+        public void Initialize(ComputeShader shader) { }
+        public void ScheduleGeneration(GpuWorldState state, ChunkCoord coord, int slot, WorldGenConfig config, NoiseStack noiseStack) { }
     }
 }
